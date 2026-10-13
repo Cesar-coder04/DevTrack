@@ -11,3 +11,6 @@ __pycache__/
 
 # Allow example environment files
 !.env.example
+
+# Personal Visual Studio Code settings
+.vscode/
