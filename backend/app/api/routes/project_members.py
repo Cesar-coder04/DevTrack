@@ -235,7 +235,21 @@ def update_project_member_role(
         )
 
     target_user = db.get(User, user_id)
+
+    if target_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado.",
+        )
+
     target_membership.role = role_data.role
+
+    try:
+        db.commit()
+        db.refresh(target_membership)
+    except Exception:
+        db.rollback()
+        raise
 
     db.commit()
     db.refresh(target_membership)
@@ -295,7 +309,11 @@ def remove_project_member(
             detail="No puedes eliminar a este administrador.",
         )
 
-    db.delete(target_membership)
-    db.commit()
+    try:
+        db.delete(target_membership)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return None
