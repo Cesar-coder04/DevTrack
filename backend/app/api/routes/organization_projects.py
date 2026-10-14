@@ -209,9 +209,16 @@ def update_project(
     for field, value in changes.items():
         setattr(project, field, value)
 
-    db.commit()
-    db.refresh(project)
+    
+    try:
+        db.commit()
+        db.refresh(project)
+    except Exception:
+        db.rollback()
+        raise
+
     return project
+
 
 
 @router.post(
@@ -240,7 +247,15 @@ def archive_project(
             detail="El proyecto ya está archivado.",
         )
 
+    
     project.archived_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(project)
+
+    try:
+        db.commit()
+        db.refresh(project)
+    except Exception:
+        db.rollback()
+        raise
+
     return project
+
