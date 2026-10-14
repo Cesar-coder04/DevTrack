@@ -56,7 +56,7 @@ def create_organization(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Ya existe una organización con ese slug.",
+            detail="No se pudo crear la organización por un conflicto de datos."
         )
 
 

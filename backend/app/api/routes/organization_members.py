@@ -186,17 +186,22 @@ def update_member_role(
             detail="El usuario no pertenece a esta organización.",
         )
 
-    if current_membership.role == "admin" and target_membership.role == "admin":
+    if current_membership.role == "admin" and role_data.role == "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Un administrador no puede modificar el rol de otro administrador.",
+            detail="Un administrador no puede asignar el rol de administrador.",
         )
 
     target_user = db.get(User, user_id)
 
     target_membership.role = role_data.role
-    db.commit()
-    db.refresh(target_membership)
+
+    try:
+        db.commit()
+        db.refresh(target_membership)
+    except Exception:
+        db.rollback()
+        raise
 
     return OrganizationMemberResponse(
         user_id=target_user.id,
@@ -242,7 +247,11 @@ def remove_member(
             detail="Un administrador no puede eliminar a otro administrador.",
         )
 
-    db.delete(target_membership)
-    db.commit()
+    try:
+        db.delete(target_membership)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return None
