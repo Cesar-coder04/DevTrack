@@ -16,6 +16,17 @@ from app.api.routes.work_item_comments import router as work_item_comments_route
 from app.api.routes.tags import router as tags_router
 from app.api.routes.work_item_tags import router as work_item_tags_router
 from app.api.routes.work_item_history import router as work_item_history_router
+from app.api.routes.notifications import router as notifications_router
+from app.api.routes.work_item_attachments import (
+    router as work_item_attachments_router,
+)
+from app.api.routes.user_preferences import (
+    router as user_preferences_router,
+)
+from app.api.routes.user_sessions import router as user_sessions_router
+from app.api.routes.organization_invitations import (
+    router as organization_invitations_router,
+)
 
 app = FastAPI(title="DevTrack API")
 app.include_router(auth_router)
@@ -30,6 +41,12 @@ app.include_router(work_item_comments_router)
 app.include_router(tags_router)
 app.include_router(work_item_tags_router)
 app.include_router(work_item_history_router)
+app.include_router(notifications_router)
+app.include_router(work_item_attachments_router)
+app.include_router(user_preferences_router)
+app.include_router(user_sessions_router)
+app.include_router(organization_invitations_router)
+
 
 @app.get("/")
 def read_root():
