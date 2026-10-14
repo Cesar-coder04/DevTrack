@@ -67,9 +67,14 @@ def create_comment(
         content=data.content,
     )
 
-    db.add(comment)
-    db.commit()
-    db.refresh(comment)
+    try:
+        db.add(comment)
+        db.commit()
+        db.refresh(comment)
+    except Exception:
+        db.rollback()
+        raise
+
     return comment
 
 
@@ -109,8 +114,13 @@ def update_comment(
         )
 
     comment.content = data.content
-    db.commit()
-    db.refresh(comment)
+    try:
+        db.commit()
+        db.refresh(comment)
+    except Exception:
+        db.rollback()
+        raise
+
     return comment
 
 
@@ -133,5 +143,9 @@ def delete_comment(
             detail="Solo puedes borrar tus propios comentarios.",
         )
 
-    db.delete(comment)
-    db.commit()
+    try:
+        db.delete(comment)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise

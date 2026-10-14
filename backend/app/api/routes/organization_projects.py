@@ -131,6 +131,9 @@ def create_project(
             status_code=status.HTTP_409_CONFLICT,
             detail="No se pudo crear el proyecto.",
         )
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get(
@@ -258,4 +261,3 @@ def archive_project(
         raise
 
     return project
-

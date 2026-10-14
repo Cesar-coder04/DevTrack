@@ -122,9 +122,8 @@ def create_invitation(
         expires_at=datetime.now(timezone.utc) + timedelta(days=7),
     )
 
-    db.add(invitation)
-
     try:
+        db.add(invitation)
         db.commit()
         db.refresh(invitation)
     except Exception:
@@ -221,18 +220,18 @@ def accept_invitation(
         (invitation.organization_id, current_user.id),
     )
 
-    if membership is None:
-        db.add(
-            OrganizationMember(
-                organization_id=invitation.organization_id,
-                user_id=current_user.id,
-                role=invitation.role,
-            )
-        )
-
-    invitation.status = "accepted"
-
     try:
+        if membership is None:
+            db.add(
+                OrganizationMember(
+                    organization_id=invitation.organization_id,
+                    user_id=current_user.id,
+                    role=invitation.role,
+                )
+            )
+
+        invitation.status = "accepted"
+
         db.commit()
     except Exception:
         db.rollback()

@@ -146,6 +146,9 @@ def add_member(
             status_code=status.HTTP_409_CONFLICT,
             detail="No se pudo añadir al usuario; comprueba si ya pertenece a la organización.",
         )
+    except Exception:
+        db.rollback()
+        raise
 
     return OrganizationMemberResponse(
         user_id=target_user.id,

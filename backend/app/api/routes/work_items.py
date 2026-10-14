@@ -114,19 +114,23 @@ def create_work_item(
         due_date=item_data.due_date,
     )
 
-    db.add(item)
-    db.flush()
+    try:
+        db.add(item)
+        db.flush()
 
-    history = WorkItemHistory(
-        work_item_id=item.id,
-        user_id=current_user.id,
-        field_name="created",
-        old_value=None,
-        new_value=item.title,
-    )
-    db.add(history)
-    db.commit()
-    db.refresh(item)
+        history = WorkItemHistory(
+            work_item_id=item.id,
+            user_id=current_user.id,
+            field_name="created",
+            old_value=None,
+            new_value=item.title,
+        )
+        db.add(history)
+        db.commit()
+        db.refresh(item)
+    except Exception:
+        db.rollback()
+        raise
 
     return item
 
@@ -211,24 +215,28 @@ def update_work_item(
         db,
     )
 
-    for field, new_value in changes.items():
-        old_value = getattr(item, field)
+    try:
+        for field, new_value in changes.items():
+            old_value = getattr(item, field)
 
-        if old_value != new_value:
-            history = WorkItemHistory(
-                work_item_id=item.id,
-                user_id=current_user.id,
-                field_name=field,
-                old_value=str(old_value) if old_value is not None else None,
-                new_value=str(new_value) if new_value is not None else None,
-            )
-            db.add(history)
-            setattr(item, field, new_value)
+            if old_value != new_value:
+                history = WorkItemHistory(
+                    work_item_id=item.id,
+                    user_id=current_user.id,
+                    field_name=field,
+                    old_value=str(old_value) if old_value is not None else None,
+                    new_value=str(new_value) if new_value is not None else None,
+                )
+                db.add(history)
+                setattr(item, field, new_value)
 
-    item.updated_at = datetime.now(timezone.utc)
+        item.updated_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(item)
+        db.commit()
+        db.refresh(item)
+    except Exception:
+        db.rollback()
+        raise
 
     return item
 
@@ -256,7 +264,11 @@ def delete_work_item(
             detail="Tarea no encontrada.",
         )
 
-    db.delete(item)
-    db.commit()
+    try:
+        db.delete(item)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return None

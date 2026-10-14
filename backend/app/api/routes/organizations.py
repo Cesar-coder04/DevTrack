@@ -58,6 +58,9 @@ def create_organization(
             status_code=status.HTTP_409_CONFLICT,
             detail="No se pudo crear la organización por un conflicto de datos."
         )
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get(

@@ -27,9 +27,13 @@ def get_preferences(
 
     if preferences is None:
         preferences = UserPreference(user_id=current_user.id)
-        db.add(preferences)
-        db.commit()
-        db.refresh(preferences)
+        try:
+            db.add(preferences)
+            db.commit()
+            db.refresh(preferences)
+        except Exception:
+            db.rollback()
+            raise
 
     return preferences
 
@@ -42,17 +46,21 @@ def update_preferences(
 ):
     preferences = db.get(UserPreference, current_user.id)
 
-    if preferences is None:
-        preferences = UserPreference(user_id=current_user.id)
-        db.add(preferences)
-        db.flush()
+    try:
+        if preferences is None:
+            preferences = UserPreference(user_id=current_user.id)
+            db.add(preferences)
+            db.flush()
 
-    changes = data.model_dump(exclude_unset=True)
+        changes = data.model_dump(exclude_unset=True)
 
-    for field, value in changes.items():
-        setattr(preferences, field, value)
+        for field, value in changes.items():
+            setattr(preferences, field, value)
 
-    db.commit()
-    db.refresh(preferences)
+        db.commit()
+        db.refresh(preferences)
+    except Exception:
+        db.rollback()
+        raise
 
     return preferences

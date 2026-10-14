@@ -177,6 +177,9 @@ def add_project_member(
             status_code=status.HTTP_409_CONFLICT,
             detail="No se pudo añadir al usuario al proyecto.",
         )
+    except Exception:
+        db.rollback()
+        raise
 
     return ProjectMemberResponse(
         project_id=project_id,
@@ -250,9 +253,6 @@ def update_project_member_role(
     except Exception:
         db.rollback()
         raise
-
-    db.commit()
-    db.refresh(target_membership)
 
     return ProjectMemberResponse(
         project_id=project_id,

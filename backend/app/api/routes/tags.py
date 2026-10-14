@@ -38,6 +38,15 @@ def get_project_for_member(
     return project
 
 
+def ensure_project_not_archived(project: Project) -> None:
+    if project.archived_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No se pueden modificar etiquetas de un proyecto archivado.",
+        )
+
+
+
 @router.post("/", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
 def create_tag(
     project_id: int,
@@ -66,9 +75,14 @@ def create_tag(
         color=data.color,
     )
 
-    db.add(tag)
-    db.commit()
-    db.refresh(tag)
+    try:
+        db.add(tag)
+        db.commit()
+        db.refresh(tag)
+    except Exception:
+        db.rollback()
+        raise
+
     return tag
 
 
@@ -121,8 +135,13 @@ def update_tag(
     if data.color is not None:
         tag.color = data.color
 
-    db.commit()
-    db.refresh(tag)
+    try:
+        db.commit()
+        db.refresh(tag)
+    except Exception:
+        db.rollback()
+        raise
+
     return tag
 
 
@@ -147,5 +166,9 @@ def delete_tag(
     if tag is None or tag.project_id != project_id:
         raise HTTPException(status_code=404, detail="Etiqueta no encontrada.")
 
-    db.delete(tag)
-    db.commit()
+    try:
+        db.delete(tag)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise

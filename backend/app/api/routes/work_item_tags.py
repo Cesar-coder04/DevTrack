@@ -93,8 +93,12 @@ def add_tag_to_work_item(
             detail="La etiqueta ya está asociada a esta tarea.",
         )
 
-    db.add(WorkItemTag(work_item_id=item.id, tag_id=tag.id))
-    db.commit()
+    try:
+        db.add(WorkItemTag(work_item_id=item.id, tag_id=tag.id))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {"message": "Etiqueta asociada correctamente."}
 
@@ -115,5 +119,9 @@ def remove_tag_from_work_item(
             detail="La etiqueta no está asociada a esta tarea.",
         )
 
-    db.delete(association)
-    db.commit()
+    try:
+        db.delete(association)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise

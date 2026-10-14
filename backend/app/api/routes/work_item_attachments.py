@@ -107,36 +107,38 @@ async def upload_attachment(
     size = 0
 
     try:
-        with destination.open("wb") as output:
-            while chunk := await file.read(1024 * 1024):
-                size += len(chunk)
+        try:
+            with destination.open("wb") as output:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
 
-                if size > MAX_FILE_SIZE:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                        detail="El archivo no puede superar los 10 MB.",
-                    )
+                    if size > MAX_FILE_SIZE:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                            detail="El archivo no puede superar los 10 MB.",
+                        )
 
-                output.write(chunk)
+                    output.write(chunk)
 
-        attachment = WorkItemAttachment(
-            work_item_id=work_item_id,
-            uploaded_by=current_user.id,
-            file_name=original_name,
-            storage_key=storage_key,
-            content_type=content_type,
-            size_bytes=size,
-        )
+            attachment = WorkItemAttachment(
+                work_item_id=work_item_id,
+                uploaded_by=current_user.id,
+                file_name=original_name,
+                storage_key=storage_key,
+                content_type=content_type,
+                size_bytes=size,
+            )
 
-        db.add(attachment)
-        db.commit()
+            db.add(attachment)
+            db.commit()
+        except Exception:
+            db.rollback()
+            destination.unlink(missing_ok=True)
+            raise
+
         db.refresh(attachment)
 
         return attachment
-
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
 
     finally:
         await file.close()
@@ -225,7 +227,11 @@ def delete_attachment(
 
     file_path = UPLOAD_DIR / attachment.storage_key
 
-    db.delete(attachment)
-    db.commit()
+    try:
+        db.delete(attachment)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     file_path.unlink(missing_ok=True)

@@ -73,8 +73,12 @@ def mark_notification_as_read(
         from datetime import datetime, timezone
         notification.read_at = datetime.now(timezone.utc)
 
-    db.commit()
-    db.refresh(notification)
+    try:
+        db.commit()
+        db.refresh(notification)
+    except Exception:
+        db.rollback()
+        raise
 
     return notification
 
@@ -98,7 +102,11 @@ def mark_all_notifications_as_read(
             from datetime import datetime, timezone
             notification.read_at = datetime.now(timezone.utc)
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {"message": "Notificaciones marcadas como leídas."}
 
@@ -122,5 +130,9 @@ def delete_notification(
             detail="Notificación no encontrada.",
         )
 
-    db.delete(notification)
-    db.commit()
+    try:
+        db.delete(notification)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
