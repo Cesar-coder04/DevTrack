@@ -1,4 +1,5 @@
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -7,7 +8,15 @@ from app.core.security import decode_access_token
 from app.db.session import get_db
 from app.models.user import User
 
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+
+from app.core.security import hash_access_token
+from app.models.user_session import UserSession
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
 
 
 def get_current_user(
@@ -23,7 +32,26 @@ def get_current_user(
     try:
         payload = decode_access_token(token)
         user_id = int(payload.get("sub"))
-    except (ValueError, TypeError, Exception):
+    except (jwt.InvalidTokenError, ValueError, TypeError):
+        raise credentials_exception
+
+    session = db.scalar(
+        select(UserSession).where(
+            UserSession.token_hash == hash_access_token(token),
+            UserSession.user_id == user_id,
+        )
+    )
+
+    if session is None or session.revoked_at is not None:
+        raise credentials_exception
+
+    expires_at = session.expires_at
+
+    # MySQL puede devolver los DateTime sin información de zona horaria.
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at <= datetime.now(timezone.utc):
         raise credentials_exception
 
     user = db.get(User, user_id)

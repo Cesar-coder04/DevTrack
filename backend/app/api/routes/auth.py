@@ -1,15 +1,22 @@
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.security import (
+    create_access_token,
+    hash_access_token,
+    verify_password,
+)
 from app.db.session import get_db
-from app.schemas.user import UserCreate, UserResponse
-from app.services.user_service import create_user, get_user_by_email, get_user_by_username
+from app.models.user_session import UserSession
+from app.schemas.user import TokenResponse, UserCreate, UserResponse
+from app.services.user_service import (
+    create_user,
+    get_user_by_email,
+    get_user_by_username,
+)
 
-from app.core.security import verify_password, create_access_token
-from app.schemas.user import UserLogin, TokenResponse
-from fastapi.security import OAuth2PasswordRequestForm
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -38,16 +45,17 @@ def register_user(
     try:
         return create_user(db, user_data)
     except IntegrityError:
-        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="El usuario o el correo electrónico ya existe.",
+            detail="No se pudo registrar el usuario por un conflicto de datos.",
         )
+
 
 
 
 @router.post("/login", response_model=TokenResponse)
 def login_user(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
@@ -69,7 +77,22 @@ def login_user(
             detail="La cuenta está desactivada.",
         )
 
-    token = create_access_token(str(user.id))
+    token, expires_at = create_access_token(str(user.id))
+
+    session = UserSession(
+        user_id=user.id,
+        token_hash=hash_access_token(token),
+        expires_at=expires_at,
+        user_agent=request.headers.get("user-agent"),
+        ip_address=request.client.host if request.client else None,
+    )
+
+    try:
+        db.add(session)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "access_token": token,

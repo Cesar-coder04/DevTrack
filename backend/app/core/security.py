@@ -1,4 +1,5 @@
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -7,6 +8,11 @@ from pwdlib import PasswordHash
 from app.config import JWT_SECRET_KEY
 
 password_hash = PasswordHash.recommended()
+
+
+def hash_access_token(token: str) -> str:
+    """Genera el hash SHA-256 de un token de acceso."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -19,25 +25,40 @@ def verify_password(password: str, hashed_password: str) -> bool:
     return password_hash.verify(password, hashed_password)
 
 
-def create_access_token(subject: str) -> str:
-    """Genera un token JWT válido durante 30 minutos."""
+def create_access_token(
+    subject: str,
+    expires_delta: timedelta = timedelta(minutes=30),
+) -> tuple[str, datetime]:
+    """Genera un JWT y devuelve también su fecha de expiración."""
     if not JWT_SECRET_KEY:
-        raise RuntimeError("Falta configurar JWT_SECRET_KEY en backend/.env.")
+        raise RuntimeError(
+            "Falta configurar JWT_SECRET_KEY en backend/.env."
+        )
 
     now = datetime.now(timezone.utc)
+    expires_at = now + expires_delta
+
     payload = {
         "sub": subject,
         "iat": now,
-        "exp": now + timedelta(minutes=30),
+        "exp": expires_at,
     }
 
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm="HS256")
+    token = jwt.encode(
+        payload,
+        JWT_SECRET_KEY,
+        algorithm="HS256",
+    )
+
+    return token, expires_at
 
 
 def decode_access_token(token: str) -> dict:
     """Valida un token JWT y devuelve su contenido."""
     if not JWT_SECRET_KEY:
-        raise RuntimeError("Falta configurar JWT_SECRET_KEY en backend/.env.")
+        raise RuntimeError(
+            "Falta configurar JWT_SECRET_KEY en backend/.env."
+        )
 
     return jwt.decode(
         token,

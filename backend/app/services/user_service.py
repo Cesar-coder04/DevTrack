@@ -15,9 +15,14 @@ def create_user(db: Session, user_data: UserCreate) -> User:
         display_name=user_data.display_name,
     )
 
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except Exception:
+        db.rollback()
+        raise
 
     return user
 
