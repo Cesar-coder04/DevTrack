@@ -22,6 +22,12 @@ router = APIRouter(
     tags=["Organization invitations"],
 )
 
+def normalize_utc(value: datetime) -> datetime:
+    """Interpreta como UTC las fechas sin zona horaria."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+
+    return value.astimezone(timezone.utc)
 
 def get_manageable_organization(
     db: Session,
@@ -117,8 +123,13 @@ def create_invitation(
     )
 
     db.add(invitation)
-    db.commit()
-    db.refresh(invitation)
+
+    try:
+        db.commit()
+        db.refresh(invitation)
+    except Exception:
+        db.rollback()
+        raise
 
     return invitation
 
@@ -183,9 +194,23 @@ def accept_invitation(
             detail="Invitación pendiente no encontrada.",
         )
 
-    if invitation.expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc):
+    organization = db.get(Organization, invitation.organization_id)
+
+    if organization is None or organization.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="La organización no existe o ha sido eliminada.",
+        )
+
+    if normalize_utc(invitation.expires_at) <= datetime.now(timezone.utc):
         invitation.status = "expired"
-        db.commit()
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La invitación ha caducado.",
@@ -206,7 +231,12 @@ def accept_invitation(
         )
 
     invitation.status = "accepted"
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {"message": "Invitación aceptada correctamente."}
 
@@ -232,6 +262,11 @@ def reject_invitation(
         )
 
     invitation.status = "rejected"
-    db.commit()
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {"message": "Invitación rechazada correctamente."}
