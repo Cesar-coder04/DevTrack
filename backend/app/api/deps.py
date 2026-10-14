@@ -1,18 +1,14 @@
+from datetime import datetime, timezone
 
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, hash_access_token
 from app.db.session import get_db
 from app.models.user import User
-
-from datetime import datetime, timezone
-
-from sqlalchemy import select
-
-from app.core.security import hash_access_token
 from app.models.user_session import UserSession
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")

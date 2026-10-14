@@ -56,4 +56,9 @@ def revoke_session(
 
     if session.revoked_at is None:
         session.revoked_at = datetime.now(timezone.utc)
-        db.commit()
+
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
