@@ -19,6 +19,10 @@ class User(Base):
             "CHAR_LENGTH(username) >= 3",
             name="ck_users_username_min_length",
         ),
+        CheckConstraint(
+            "CHAR_LENGTH(display_name) >= 1",
+            name="ck_users_display_name_min_length",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
