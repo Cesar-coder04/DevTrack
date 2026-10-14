@@ -1,18 +1,30 @@
-from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
-
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config, pool
+from alembic import context
+
 from app.db.base import Base
 from app.db.session import engine
+from app.models.user import User
+from app.models.organization import Organization
+from app.models.organization_member import OrganizationMember
 from app.models.project import Project
+from app.models.project_member import ProjectMember
+from app.models.work_item import WorkItem
+from app.models.work_item_history import WorkItemHistory
+from app.models.work_item_comment import WorkItemComment
+from app.models.tag import Tag
+from app.models.work_item_tag import WorkItemTag
+from app.models.work_item_attachment import WorkItemAttachment
+from app.models.notification import Notification
+from app.models.user_preference import UserPreference
+from app.models.user_session import UserSession
+from app.models.organization_invitation import OrganizationInvitation
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
