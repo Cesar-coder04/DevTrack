@@ -3,3 +3,5 @@ pymysql
 sqlalchemy
 python-dotenv
 pytest
+httpx
+httpx2
