@@ -5,11 +5,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
+InvitationRole = Literal["admin", "member", "viewer"]
+InvitationStatus = Literal[
+    "pending",
+    "accepted",
+    "rejected",
+    "expired",
+]
 
 class OrganizationInvitationCreate(BaseModel):
     email: EmailStr
-    role: Literal["admin", "member", "viewer"] = "member"
-
+    role: InvitationRole = "member"
 
 class OrganizationInvitationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -18,8 +24,8 @@ class OrganizationInvitationResponse(BaseModel):
     organization_id: int
     invited_by: int
     email: EmailStr
-    role: str
-    status: str
+    role: InvitationRole
+    status: InvitationStatus
     expires_at: datetime
     created_at: datetime
 
