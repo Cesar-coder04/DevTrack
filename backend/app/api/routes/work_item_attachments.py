@@ -1,5 +1,4 @@
 
-import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -79,7 +78,7 @@ def list_attachments(
     query = (
         select(WorkItemAttachment)
         .where(WorkItemAttachment.work_item_id == work_item_id)
-        .order_by(WorkItemAttachment.created_at.desc())
+        .order_by(WorkItemAttachment.uploaded_at.desc())
     )
 
     return db.scalars(query).all()
@@ -122,8 +121,8 @@ async def upload_attachment(
 
             attachment = WorkItemAttachment(
                 work_item_id=work_item_id,
-                uploaded_by=current_user.id,
-                file_name=original_name,
+                uploaded_by_id=current_user.id,
+                filename=original_name,
                 storage_key=storage_key,
                 content_type=content_type,
                 size_bytes=size,
@@ -178,7 +177,7 @@ def download_attachment(
 
     return FileResponse(
         path=file_path,
-        filename=attachment.file_name,
+        filename=attachment.filename,
         media_type=attachment.content_type or "application/octet-stream",
     )
 
@@ -217,7 +216,7 @@ def delete_attachment(
     )
 
     if (
-        attachment.uploaded_by != current_user.id
+        attachment.uploaded_by_id != current_user.id
         and membership.role not in ("owner", "admin")
     ):
         raise HTTPException(

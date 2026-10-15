@@ -1,6 +1,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -94,8 +95,20 @@ def add_tag_to_work_item(
         )
 
     try:
-        db.add(WorkItemTag(work_item_id=item.id, tag_id=tag.id))
+        db.add(
+            WorkItemTag(
+                work_item_id=item.id,
+                tag_id=tag.id,
+                added_by_id=user.id,
+            )
+        )
         db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="La etiqueta ya está asociada a esta tarea.",
+        ) from exc
     except Exception:
         db.rollback()
         raise

@@ -1,4 +1,6 @@
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -20,7 +22,7 @@ def list_notifications(
     current_user: User = Depends(get_current_user),
 ):
     query = select(Notification).where(
-        Notification.user_id == current_user.id
+        Notification.recipient_id == current_user.id
     )
 
     if unread_only:
@@ -40,7 +42,7 @@ def get_unread_count(
         select(func.count())
         .select_from(Notification)
         .where(
-            Notification.user_id == current_user.id,
+            Notification.recipient_id == current_user.id,
             Notification.is_read.is_(False),
         )
     )
@@ -57,7 +59,7 @@ def mark_notification_as_read(
     notification = db.scalar(
         select(Notification).where(
             Notification.id == notification_id,
-            Notification.user_id == current_user.id,
+            Notification.recipient_id == current_user.id,
         )
     )
 
@@ -69,9 +71,7 @@ def mark_notification_as_read(
 
     notification.is_read = True
 
-    if hasattr(notification, "read_at"):
-        from datetime import datetime, timezone
-        notification.read_at = datetime.now(timezone.utc)
+    notification.read_at = datetime.now(timezone.utc)
 
     try:
         db.commit()
@@ -90,7 +90,7 @@ def mark_all_notifications_as_read(
 ):
     notifications = db.scalars(
         select(Notification).where(
-            Notification.user_id == current_user.id,
+            Notification.recipient_id == current_user.id,
             Notification.is_read.is_(False),
         )
     ).all()
@@ -98,9 +98,7 @@ def mark_all_notifications_as_read(
     for notification in notifications:
         notification.is_read = True
 
-        if hasattr(notification, "read_at"):
-            from datetime import datetime, timezone
-            notification.read_at = datetime.now(timezone.utc)
+        notification.read_at = datetime.now(timezone.utc)
 
     try:
         db.commit()
@@ -120,7 +118,7 @@ def delete_notification(
     notification = db.scalar(
         select(Notification).where(
             Notification.id == notification_id,
-            Notification.user_id == current_user.id,
+            Notification.recipient_id == current_user.id,
         )
     )
 

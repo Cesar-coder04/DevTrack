@@ -13,7 +13,12 @@ from app.models.project_member import ProjectMember
 from app.models.user import User
 from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
-from app.schemas.work_item import WorkItemCreate, WorkItemResponse, WorkItemUpdate
+from app.schemas.work_item import (
+    WorkItemCreate,
+    WorkItemResponse,
+    WorkItemStatus,
+    WorkItemUpdate,
+)
 
 router = APIRouter(
     prefix="/projects/{project_id}/work-items",
@@ -109,9 +114,13 @@ def create_work_item(
         description=item_data.description,
         status=item_data.status,
         priority=item_data.priority,
-        reporter_id=current_user.id,
-        assignee_id=item_data.assignee_id,
-        due_date=item_data.due_date,
+        created_by_id=current_user.id,
+        assigned_to_id=item_data.assignee_id,
+        due_date=(
+            item_data.due_date.date()
+            if item_data.due_date is not None
+            else None
+        ),
     )
 
     try:
@@ -120,7 +129,7 @@ def create_work_item(
 
         history = WorkItemHistory(
             work_item_id=item.id,
-            user_id=current_user.id,
+            changed_by_id=current_user.id,
             field_name="created",
             old_value=None,
             new_value=item.title,
@@ -138,7 +147,7 @@ def create_work_item(
 @router.get("/", response_model=list[WorkItemResponse])
 def list_work_items(
     project_id: int,
-    status_filter: str | None = None,
+    status_filter: WorkItemStatus | None = None,
     priority_filter: str | None = None,
     assignee_id: int | None = None,
     db: Session = Depends(get_db),
@@ -155,7 +164,7 @@ def list_work_items(
         statement = statement.where(WorkItem.priority == priority_filter)
 
     if assignee_id is not None:
-        statement = statement.where(WorkItem.assignee_id == assignee_id)
+        statement = statement.where(WorkItem.assigned_to_id == assignee_id)
 
     statement = statement.order_by(WorkItem.created_at.desc())
 
@@ -210,25 +219,30 @@ def update_work_item(
 
     check_assignee(
         project_id,
-        changes.get("assignee_id", item.assignee_id),
+        changes.get("assignee_id", item.assigned_to_id),
         project,
         db,
     )
 
     try:
         for field, new_value in changes.items():
-            old_value = getattr(item, field)
+            model_field = (
+                "assigned_to_id" if field == "assignee_id" else field
+            )
+            old_value = getattr(item, model_field)
+            if field == "due_date" and new_value is not None:
+                new_value = new_value.date()
 
             if old_value != new_value:
                 history = WorkItemHistory(
                     work_item_id=item.id,
-                    user_id=current_user.id,
+                    changed_by_id=current_user.id,
                     field_name=field,
                     old_value=str(old_value) if old_value is not None else None,
                     new_value=str(new_value) if new_value is not None else None,
                 )
                 db.add(history)
-                setattr(item, field, new_value)
+                setattr(item, model_field, new_value)
 
         item.updated_at = datetime.now(timezone.utc)
 

@@ -63,7 +63,7 @@ def create_comment(
 
     comment = WorkItemComment(
         work_item_id=item.id,
-        user_id=user.id,
+        author_id=user.id,
         content=data.content,
     )
 
@@ -107,7 +107,7 @@ def update_comment(
     if comment is None or comment.work_item_id != item.id:
         raise HTTPException(status_code=404, detail="Comentario no encontrado.")
 
-    if comment.user_id != user.id:
+    if comment.author_id != user.id:
         raise HTTPException(
             status_code=403,
             detail="Solo puedes editar tus propios comentarios.",
@@ -137,7 +137,7 @@ def delete_comment(
     if comment is None or comment.work_item_id != item.id:
         raise HTTPException(status_code=404, detail="Comentario no encontrado.")
 
-    if comment.user_id != user.id:
+    if comment.author_id != user.id:
         raise HTTPException(
             status_code=403,
             detail="Solo puedes borrar tus propios comentarios.",

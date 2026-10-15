@@ -17,7 +17,7 @@ class WorkItemCommentResponse(BaseModel):
 
     id: int
     work_item_id: int
-    user_id: int
+    user_id: int = Field(validation_alias="author_id")
     content: str
     created_at: datetime
     updated_at: datetime | None = None

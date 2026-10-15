@@ -11,6 +11,8 @@ from app.models.project_member import ProjectMember
 from app.models.tag import Tag
 from app.schemas.tag import TagCreate, TagUpdate, TagResponse
 
+from sqlalchemy.exc import IntegrityError
+
 router = APIRouter(
     prefix="/projects/{project_id}/tags",
     tags=["Tags"],
@@ -79,6 +81,21 @@ def create_tag(
         db.add(tag)
         db.commit()
         db.refresh(tag)
+    except IntegrityError as exc:
+        db.rollback()
+
+        error_message = str(exc.orig)
+
+        if (
+            getattr(exc.orig, "errno", None) == 1062
+            and "uq_tags_project_id_name" in error_message
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe una etiqueta con ese nombre en el proyecto.",
+            ) from exc
+
+        raise
     except Exception:
         db.rollback()
         raise
@@ -138,6 +155,21 @@ def update_tag(
     try:
         db.commit()
         db.refresh(tag)
+    except IntegrityError as exc:
+        db.rollback()
+
+        error_message = str(exc.orig)
+
+        if (
+            getattr(exc.orig, "errno", None) == 1062
+            and "uq_tags_project_id_name" in error_message
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ya existe una etiqueta con ese nombre.",
+            ) from exc
+
+        raise
     except Exception:
         db.rollback()
         raise
