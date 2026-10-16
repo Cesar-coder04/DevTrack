@@ -6,8 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.project_access import require_project_organization_membership
 from app.db.session import get_db
-from app.models.organization_member import OrganizationMember
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.user import User
@@ -43,16 +43,13 @@ def get_project_access(
             detail="Proyecto no encontrado o archivado.",
         )
 
-    organization_membership = db.get(
-        OrganizationMember,
-        (project.organization_id, current_user.id),
+    require_project_organization_membership(
+        db,
+        project,
+        current_user.id,
+        allow_unorganized=False,
+        detail="No perteneces a la organización.",
     )
-
-    if organization_membership is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="No perteneces a la organización.",
-        )
 
     project_membership = db.get(
         ProjectMember,

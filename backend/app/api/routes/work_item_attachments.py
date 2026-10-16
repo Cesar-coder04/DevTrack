@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.project_access import require_project_organization_membership
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.project_member import ProjectMember
@@ -52,6 +53,13 @@ def get_accessible_work_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Proyecto no encontrado.",
         )
+
+    require_project_organization_membership(
+        db,
+        project,
+        user_id,
+        detail="No tienes acceso a esta tarea.",
+    )
 
     membership = db.get(
         ProjectMember,

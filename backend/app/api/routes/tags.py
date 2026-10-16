@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.api.project_access import require_project_organization_membership
 from app.db.session import get_db
 from app.models.user import User
 from app.models.project import Project
@@ -28,6 +29,13 @@ def get_project_for_member(
 
     if project is None or project.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado.")
+
+    require_project_organization_membership(
+        db,
+        project,
+        user.id,
+        detail="No tienes acceso a este proyecto.",
+    )
 
     membership = db.get(ProjectMember, (project_id, user.id))
 
