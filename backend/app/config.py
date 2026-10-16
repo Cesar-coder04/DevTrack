@@ -31,6 +31,28 @@ else:
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 APP_ENV = os.getenv("APP_ENV", "production").strip().lower()
 
+_cookie_secure_setting = os.getenv("DEVTRACK_COOKIE_SECURE", "true").strip().lower()
+if _cookie_secure_setting not in {"true", "false"}:
+    raise RuntimeError("DEVTRACK_COOKIE_SECURE must be 'true' or 'false'.")
+
+SESSION_COOKIE_SECURE = _cookie_secure_setting == "true"
+if not SESSION_COOKIE_SECURE and APP_ENV not in {"development", "local"}:
+    raise RuntimeError(
+        "DEVTRACK_COOKIE_SECURE=false is allowed only in local development."
+    )
+
+SESSION_COOKIE_NAME = "devtrack_session"
+TRUSTED_WEB_ORIGINS = frozenset(
+    origin.strip()
+    for origin in os.getenv("DEVTRACK_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+)
+
+
+def is_trusted_web_origin(origin: str | None) -> bool:
+    return origin is not None and origin in TRUSTED_WEB_ORIGINS
+
+
 EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "smtp").strip().lower()
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
