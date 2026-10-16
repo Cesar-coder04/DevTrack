@@ -13,6 +13,7 @@ from starlette.datastructures import UploadFile
 from app.api.routes import (
     notifications,
     organization_invitations,
+    organization_members,
     user_preferences,
     work_item_attachments,
     work_item_comments,
@@ -21,6 +22,7 @@ from app.api.routes import (
 from app.core.security import hash_access_token
 from app.models.notification import Notification
 from app.models.organization import Organization
+from app.models.organization_member import OrganizationMember
 from app.models.organization_invitation import OrganizationInvitation
 from app.models.project import Project
 from app.models.project_member import ProjectMember
@@ -32,6 +34,10 @@ from app.models.work_item_attachment import WorkItemAttachment
 from app.models.work_item_comment import WorkItemComment
 from app.models.work_item_tag import WorkItemTag
 from app.schemas.notification import NotificationResponse
+from app.schemas.organization_member import (
+    OrganizationMemberCreate,
+    OrganizationMemberRoleUpdate,
+)
 from app.schemas.organization_invitation import (
     OrganizationInvitationCreate,
     OrganizationInvitationResponse,
@@ -40,12 +46,14 @@ from app.schemas.user_preference import (
     UserPreferenceResponse,
     UserPreferenceUpdate,
 )
+from app.services import email_service
 from app.schemas.work_item_attachment import WorkItemAttachmentResponse
 from app.schemas.work_item_comment import WorkItemCommentResponse
 from app.schemas.work_item_tag import WorkItemTagResponse
 
 
 NOW = datetime(2026, 10, 15, tzinfo=timezone.utc)
+INVITATION_TOKEN = "opaque-token-value-long-enough-for-validation"
 
 
 def make_invitation(**overrides):
@@ -55,9 +63,10 @@ def make_invitation(**overrides):
         "invited_by_id": 11,
         "email": "invitee@example.com",
         "role": "member",
-        "token_hash": hash_access_token("opaque-token"),
+        "token_hash": hash_access_token(INVITATION_TOKEN),
         "expires_at": NOW + timedelta(days=3),
         "accepted_at": None,
+        "rejected_at": None,
         "revoked_at": None,
         "created_at": NOW,
     }
@@ -98,19 +107,30 @@ def test_invitation_creation_hashes_token_and_derives_pending_status(monkeypatch
     monkeypatch.setattr(
         organization_invitations,
         "get_manageable_organization",
-        lambda db, organization_id, user_id: Organization(
-            id=organization_id, owner_id=user_id
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=organization_id, owner_id=user_id, name="Acme"
         ),
     )
     monkeypatch.setattr(
         organization_invitations,
-        "uuid4",
-        lambda: SimpleNamespace(hex="raw-invitation-token"),
+        "secrets",
+        SimpleNamespace(token_urlsafe=lambda size: "raw-invitation-token"),
+    )
+    sent = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "build_invitation_url",
+        lambda invitation_id, token: f"https://app.test/invitations/{invitation_id}?token={token}",
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
     )
     invited_user = SimpleNamespace(id=22, email="invitee@example.com", is_active=True)
     db = MagicMock()
     db.scalar.side_effect = [invited_user, None]
-    db.get.return_value = None
+    db.scalars.return_value.all.return_value = []
     added = []
     def add_invitation(invitation):
         invitation.id = 5
@@ -137,6 +157,10 @@ def test_invitation_creation_hashes_token_and_derives_pending_status(monkeypatch
     response = OrganizationInvitationResponse.model_validate(invitation)
     assert response.invited_by == 11
     assert response.status == "pending"
+    assert "token" not in response.model_dump()
+    assert "token_hash" not in response.model_dump()
+    assert sent[0]["recipient"] == "invitee@example.com"
+    assert "raw-invitation-token" in sent[0]["invitation_url"]
 
 
 def test_invitation_schema_derives_all_persisted_states():
@@ -145,6 +169,12 @@ def test_invitation_schema_derives_all_persisted_states():
             make_invitation(accepted_at=NOW)
         ).status
         == "accepted"
+    )
+    assert (
+        OrganizationInvitationResponse.model_validate(
+            make_invitation(rejected_at=NOW)
+        ).status
+        == "rejected"
     )
     assert (
         OrganizationInvitationResponse.model_validate(
@@ -163,6 +193,11 @@ def test_invitation_schema_derives_all_persisted_states():
             email="invitee@example.com",
             role="viewer",
         )
+    with pytest.raises(ValidationError):
+        OrganizationInvitationCreate(
+            email="invitee@example.com",
+            role="owner",
+        )
 
 
 def test_invitation_lists_are_scoped_and_public_status_is_mapped(monkeypatch):
@@ -170,7 +205,7 @@ def test_invitation_lists_are_scoped_and_public_status_is_mapped(monkeypatch):
     monkeypatch.setattr(
         organization_invitations,
         "get_manageable_organization",
-        lambda db, organization_id, user_id: Organization(id=organization_id),
+        lambda db, organization_id, user_id, **kwargs: Organization(id=organization_id),
     )
     db = MagicMock()
     db.scalars.return_value.all.return_value = [invitation]
@@ -192,21 +227,29 @@ def test_invitation_lists_are_scoped_and_public_status_is_mapped(monkeypatch):
         current_user=SimpleNamespace(id=22, email="invitee@example.com"),
     )
     my_query = str(db.scalars.call_args.args[0])
-    assert "organization_invitations.email =" in my_query
+    assert "lower(organization_invitations.email) =" in my_query
     assert "organization_invitations.accepted_at IS NULL" in my_query
+    assert "organization_invitations.rejected_at IS NULL" in my_query
     assert "organization_invitations.revoked_at IS NULL" in my_query
 
 
 def test_accept_invitation_creates_membership_and_marks_timestamp():
     invitation = make_invitation()
     db = MagicMock()
-    db.scalar.return_value = invitation
-    db.get.side_effect = [Organization(id=7), None]
+    db.scalar.side_effect = [
+        invitation,
+        Organization(id=7, deleted_at=None),
+        None,
+        invitation,
+    ]
     added = []
     db.add.side_effect = added.append
 
     result = organization_invitations.accept_invitation(
         invitation_id=5,
+        data=organization_invitations.OrganizationInvitationToken(
+            token=INVITATION_TOKEN
+        ),
         db=db,
         current_user=SimpleNamespace(id=22, email="invitee@example.com"),
     )
@@ -216,22 +259,61 @@ def test_accept_invitation_creates_membership_and_marks_timestamp():
     assert added[0].organization_id == 7
     assert added[0].user_id == 22
     assert added[0].role == "member"
+    statements = [
+        str(call.args[0].compile())
+        for call in db.scalar.call_args_list
+    ]
+    assert "FROM organizations" in statements[1]
+    assert "FOR UPDATE" in statements[1]
+    assert "FROM organization_members" in statements[2]
+    assert "FOR UPDATE" in statements[2]
+    assert "FROM organization_invitations" in statements[3]
+    assert "FOR UPDATE" in statements[3]
+    assert db.scalar.call_args_list[3].args[0]._execution_options[
+        "populate_existing"
+    ]
     db.commit.assert_called_once()
 
 
 def test_accept_invitation_rejects_expired_and_processed_invites():
     expired = make_invitation(expires_at=NOW - timedelta(seconds=1))
     db = MagicMock()
-    db.scalar.return_value = expired
-    db.get.return_value = Organization(id=7)
+    db.scalar.side_effect = [
+        expired,
+        Organization(id=7, deleted_at=None),
+        None,
+        expired,
+    ]
 
     with pytest.raises(HTTPException) as expired_error:
         organization_invitations.accept_invitation(
             invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
             db=db,
             current_user=SimpleNamespace(id=22, email="invitee@example.com"),
         )
     assert expired_error.value.status_code == 400
+    db.commit.assert_not_called()
+
+    accepted = make_invitation(accepted_at=NOW)
+    db.scalar.side_effect = [
+        accepted,
+        Organization(id=7, deleted_at=None),
+        None,
+        accepted,
+    ]
+    with pytest.raises(HTTPException) as processed_error:
+        organization_invitations.accept_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=22, email="invitee@example.com"),
+        )
+    assert processed_error.value.status_code == 409
     db.commit.assert_not_called()
 
 
@@ -248,18 +330,6 @@ def test_comment_access_helper_rejects_nonmembers():
         )
     assert error.value.status_code == 403
 
-    db.reset_mock()
-    db.scalar.return_value = make_invitation(accepted_at=NOW)
-    with pytest.raises(HTTPException) as processed_error:
-        organization_invitations.accept_invitation(
-            invitation_id=5,
-            db=db,
-            current_user=SimpleNamespace(id=22, email="invitee@example.com"),
-        )
-    assert processed_error.value.status_code == 409
-    db.commit.assert_not_called()
-
-
 def test_invitee_rejection_and_manager_revocation_are_authorized(monkeypatch):
     invitation = make_invitation()
     db = MagicMock()
@@ -267,11 +337,25 @@ def test_invitee_rejection_and_manager_revocation_are_authorized(monkeypatch):
 
     organization_invitations.reject_invitation(
         invitation_id=5,
+        data=organization_invitations.OrganizationInvitationToken(
+            token=INVITATION_TOKEN
+        ),
         db=db,
         current_user=SimpleNamespace(id=22, email="invitee@example.com"),
     )
-    assert invitation.revoked_at is not None
+    assert invitation.rejected_at is not None
+    assert invitation.revoked_at is None
     db.commit.assert_called_once()
+    with pytest.raises(HTTPException) as repeated_rejection:
+        organization_invitations.reject_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=22, email="invitee@example.com"),
+        )
+    assert repeated_rejection.value.status_code == 409
 
     pending = make_invitation()
     db.reset_mock()
@@ -279,7 +363,7 @@ def test_invitee_rejection_and_manager_revocation_are_authorized(monkeypatch):
     monkeypatch.setattr(
         organization_invitations,
         "get_manageable_organization",
-        lambda db, organization_id, user_id: Organization(id=organization_id),
+        lambda db, organization_id, user_id, **kwargs: Organization(id=organization_id),
     )
     result = organization_invitations.revoke_invitation(
         organization_id=7,
@@ -290,6 +374,14 @@ def test_invitee_rejection_and_manager_revocation_are_authorized(monkeypatch):
     assert result["message"] == "Invitación revocada correctamente."
     assert pending.revoked_at is not None
     db.commit.assert_called_once()
+    with pytest.raises(HTTPException) as repeated_revocation:
+        organization_invitations.revoke_invitation(
+            organization_id=7,
+            invitation_id=5,
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+    assert repeated_revocation.value.status_code == 409
 
     pending = make_invitation()
     db.reset_mock()
@@ -306,11 +398,651 @@ def test_invitee_rejection_and_manager_revocation_are_authorized(monkeypatch):
     assert pending.revoked_at is not None
 
 
+def test_rejecting_expired_invitation_preserves_http_contract():
+    invitation = make_invitation(expires_at=NOW - timedelta(seconds=1))
+    db = MagicMock()
+    db.scalar.return_value = invitation
+
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.reject_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=22, email="invitee@example.com"),
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "La invitación ha caducado."
+    assert invitation.rejected_at is None
+    db.commit.assert_not_called()
+
+
+def test_pending_invitation_reuse_rotates_token_and_invalidates_previous(monkeypatch):
+    invitation = make_invitation()
+    token_values = iter(
+        [
+            "first-rotation-token-is-long-enough-for-validation",
+            "second-rotation-token-is-long-enough-for-validation",
+        ]
+    )
+    sent = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=organization_id, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations.secrets,
+        "token_urlsafe",
+        lambda size: next(token_values),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "build_invitation_url",
+        lambda invitation_id, token: f"https://app.test/{invitation_id}?token={token}",
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = MagicMock()
+    invited_user = SimpleNamespace(
+        id=22, email="invitee@example.com", is_active=True
+    )
+    db.scalar.side_effect = [invited_user, None, invited_user, None]
+    db.scalars.return_value.all.return_value = [invitation]
+
+    result = None
+    for _ in range(2):
+        result = organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(
+                email="Invitee@Example.com", role="admin"
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    assert result.id == invitation.id
+    assert result.status == "pending"
+    assert invitation.email == "invitee@example.com"
+    assert invitation.role == "admin"
+    assert invitation.token_hash == hash_access_token(
+        "second-rotation-token-is-long-enough-for-validation"
+    )
+    assert [call[0] for call in db.mock_calls].count("refresh") == 2
+    assert [call[0] for call in db.mock_calls].count("commit") == 2
+    assert len(sent) == 2
+    assert (
+        "second-rotation-token-is-long-enough-for-validation"
+        in sent[1]["invitation_url"]
+    )
+    with pytest.raises(HTTPException) as old_token:
+        organization_invitations.validate_invitation_recipient_and_token(
+            invitation,
+            SimpleNamespace(email="invitee@example.com"),
+            "first-rotation-token-is-long-enough-for-validation",
+        )
+    assert old_token.value.status_code == 404
+    compiled_pending_query = str(db.scalars.call_args.args[0].compile())
+    assert "FOR UPDATE" in compiled_pending_query
+
+
+def test_email_failure_is_reported_after_persistence_and_retry_rotates_token(
+    monkeypatch,
+):
+    invitation_rows = []
+    token_values = iter(
+        [
+            "first-email-attempt-token-long-enough-123",
+            "retry-email-attempt-token-long-enough-456",
+        ]
+    )
+    send_attempts = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=7, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations.secrets,
+        "token_urlsafe",
+        lambda size: next(token_values),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "build_invitation_url",
+        lambda invitation_id, token: f"https://app.test/{invitation_id}?token={token}",
+    )
+
+    def send_email(**kwargs):
+        send_attempts.append(kwargs)
+        if len(send_attempts) == 1:
+            raise email_service.EmailDeliveryError("SMTP unavailable")
+
+    monkeypatch.setattr(organization_invitations, "send_invitation_email", send_email)
+    db = MagicMock()
+    db.scalar.side_effect = [
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+    ]
+    db.scalars.return_value.all.side_effect = lambda: list(invitation_rows)
+    db.add.side_effect = invitation_rows.append
+    db.refresh.side_effect = lambda invitation: (
+        setattr(invitation, "id", 5),
+        setattr(invitation, "created_at", NOW),
+    )
+    user = SimpleNamespace(id=11)
+    request = OrganizationInvitationCreate(email="invitee@example.com")
+
+    with pytest.raises(HTTPException) as send_error:
+        organization_invitations.create_invitation(
+            organization_id=7, data=request, db=db, current_user=user
+        )
+    assert send_error.value.status_code == 502
+    assert invitation_rows[0].token_hash == hash_access_token(
+        "first-email-attempt-token-long-enough-123"
+    )
+    db.commit.assert_called_once()
+    action_names = [call[0] for call in db.mock_calls]
+    assert action_names.index("refresh") < action_names.index("commit")
+
+    result = organization_invitations.create_invitation(
+        organization_id=7, data=request, db=db, current_user=user
+    )
+    assert result.id == invitation_rows[0].id
+    assert result.status == "pending"
+    assert invitation_rows[0].token_hash == hash_access_token(
+        "retry-email-attempt-token-long-enough-456"
+    )
+    assert len(send_attempts) == 2
+
+
+def test_invitation_refresh_failure_rolls_back_before_commit_and_email(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=7, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    db.refresh.side_effect = RuntimeError("refresh failed")
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(email="invitee@example.com"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+    assert sent == []
+
+
+def test_invalid_invitation_url_rolls_back_before_commit(monkeypatch):
+    sent = []
+
+    def fail_url_build(invitation_id, token):
+        raise email_service.EmailDeliveryError("unsafe URL")
+
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=7, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "build_invitation_url",
+        fail_url_build,
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    db.refresh.side_effect = lambda invitation: (
+        setattr(invitation, "id", 5),
+        setattr(invitation, "created_at", NOW),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(email="invitee@example.com"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    assert error.value.status_code == 503
+    assert "unsafe URL" not in error.value.detail
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+    assert sent == []
+
+
+def test_invitation_commit_exception_does_not_send_email(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "build_invitation_url",
+        lambda invitation_id, token: f"https://app.test/invitations/{invitation_id}?token={token}",
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=7, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    db.refresh.side_effect = lambda invitation: (
+        setattr(invitation, "id", 5),
+        setattr(invitation, "created_at", NOW),
+    )
+    db.commit.side_effect = RuntimeError("commit failed")
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(email="invitee@example.com"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    db.rollback.assert_called_once()
+    assert sent == []
+
+
+def test_invitation_write_failure_rolls_back_and_does_not_send_email(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=7, name="Acme"
+        ),
+    )
+    monkeypatch.setattr(
+        organization_invitations,
+        "send_invitation_email",
+        lambda **kwargs: sent.append(kwargs),
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        SimpleNamespace(id=22, email="invitee@example.com", is_active=True),
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    db.flush.side_effect = RuntimeError("database write failed")
+
+    with pytest.raises(RuntimeError, match="database write failed"):
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(email="invitee@example.com"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+    assert sent == []
+
+
+def test_create_rechecks_membership_after_locking_organization(monkeypatch):
+    organization = Organization(id=7, deleted_at=None, name="Acme")
+    admin_membership = SimpleNamespace(role="admin")
+    invited_user = SimpleNamespace(
+        id=22, email="invitee@example.com", is_active=True
+    )
+    existing_membership = OrganizationMember(
+        organization_id=7,
+        user_id=22,
+        role="member",
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        organization,
+        admin_membership,
+        invited_user,
+        existing_membership,
+    ]
+
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(email="invitee@example.com"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    statements = [
+        str(call.args[0].compile())
+        for call in db.scalar.call_args_list
+    ]
+    assert "FROM organizations" in statements[0]
+    assert "FOR UPDATE" in statements[0]
+    assert "FROM organization_members" in statements[1]
+    assert "FOR UPDATE" in statements[1]
+    assert "FROM users" in statements[2]
+    assert "FROM organization_members" in statements[3]
+    assert "FOR UPDATE" in statements[3]
+    assert error.value.status_code == 409
+    db.scalars.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_direct_member_add_serializes_and_revokes_pending_invitations():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=11,
+        deleted_at=None,
+    )
+    admin_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="admin",
+    )
+    target_user = SimpleNamespace(
+        id=22,
+        username="invitee",
+        email="invitee@example.com",
+        display_name="Invitee",
+        is_active=True,
+    )
+    pending_invitation = make_invitation()
+    db = MagicMock()
+    db.scalar.side_effect = [
+        organization,
+        admin_membership,
+        target_user,
+        None,
+    ]
+    db.scalars.return_value.all.return_value = [pending_invitation]
+    added = []
+    db.add.side_effect = added.append
+
+    response = organization_members.add_member(
+        organization_id=7,
+        member_data=OrganizationMemberCreate(username="invitee", role="member"),
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    statements = [
+        str(call.args[0].compile())
+        for call in db.scalar.call_args_list
+    ]
+    assert "FROM organizations" in statements[0]
+    assert "FOR UPDATE" in statements[0]
+    assert "FROM organization_members" in statements[1]
+    assert "FOR UPDATE" in statements[1]
+    assert "FROM users" in statements[2]
+    assert "FROM organization_members" in statements[3]
+    assert "FOR UPDATE" in statements[3]
+    pending_query = str(db.scalars.call_args.args[0].compile())
+    assert "FROM organization_invitations" in pending_query
+    assert "FOR UPDATE" in pending_query
+    assert response.user_id == target_user.id
+    assert added[0].user_id == target_user.id
+    assert pending_invitation.revoked_at is not None
+    db.commit.assert_called_once()
+
+
+def test_direct_member_add_refresh_failure_rolls_back_before_commit():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=11,
+        deleted_at=None,
+    )
+    admin_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="admin",
+    )
+    target_user = SimpleNamespace(
+        id=22,
+        username="invitee",
+        email="invitee@example.com",
+        display_name="Invitee",
+        is_active=True,
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        organization,
+        admin_membership,
+        target_user,
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    db.refresh.side_effect = RuntimeError("refresh failed")
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        organization_members.add_member(
+            organization_id=7,
+            member_data=OrganizationMemberCreate(
+                username="invitee",
+                role="member",
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    db.flush.assert_called_once()
+    db.refresh.assert_called_once()
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once()
+
+
+def test_member_role_update_refresh_failure_rolls_back_before_commit():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=99,
+        deleted_at=None,
+    )
+    admin_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="admin",
+    )
+    target_membership = OrganizationMember(
+        organization_id=7,
+        user_id=22,
+        role="admin",
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [
+        organization,
+        admin_membership,
+        target_membership,
+    ]
+    db.get.return_value = SimpleNamespace(
+        id=22,
+        username="invitee",
+        display_name="Invitee",
+    )
+    db.refresh.side_effect = RuntimeError("refresh failed")
+
+    with pytest.raises(RuntimeError, match="refresh failed"):
+        organization_members.update_member_role(
+            organization_id=7,
+            user_id=22,
+            role_data=OrganizationMemberRoleUpdate(role="member"),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    db.flush.assert_called_once()
+    db.refresh.assert_called_once_with(target_membership)
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "schema_factory",
+    [
+        lambda: OrganizationMemberCreate(username="invitee", role="viewer"),
+        lambda: OrganizationMemberRoleUpdate(role="viewer"),
+    ],
+)
+def test_organization_membership_schemas_reject_viewer_role(schema_factory):
+    with pytest.raises(ValidationError):
+        schema_factory()
+
+
+def test_invitation_acceptance_rejects_wrong_token_and_wrong_recipient():
+    invitation = make_invitation()
+    db = MagicMock()
+    db.scalar.side_effect = [
+        invitation,
+        Organization(id=7, deleted_at=None),
+        None,
+        invitation,
+        invitation,
+        Organization(id=7, deleted_at=None),
+        None,
+        invitation,
+    ]
+    user = SimpleNamespace(id=22, email="invitee@example.com")
+
+    with pytest.raises(HTTPException) as wrong_token:
+        organization_invitations.accept_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token="incorrect-token-value-long-enough-for-validation"
+            ),
+            db=db,
+            current_user=user,
+        )
+    assert wrong_token.value.status_code == 404
+
+    with pytest.raises(HTTPException) as wrong_email:
+        organization_invitations.accept_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=23, email="other@example.com"),
+        )
+    assert wrong_email.value.status_code == 404
+    db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("state_field", "state_time"),
+    [("revoked_at", NOW), ("rejected_at", NOW)],
+)
+def test_acceptance_rejects_current_revoked_or_rejected_state(
+    state_field,
+    state_time,
+):
+    stale_reference = make_invitation()
+    current_locked_row = make_invitation(**{state_field: state_time})
+    db = MagicMock()
+    db.scalar.side_effect = [
+        stale_reference,
+        Organization(id=7, deleted_at=None),
+        None,
+        current_locked_row,
+    ]
+
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.accept_invitation(
+            invitation_id=5,
+            data=organization_invitations.OrganizationInvitationToken(
+                token=INVITATION_TOKEN
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=22, email="invitee@example.com"),
+        )
+
+    assert error.value.status_code == 409
+    assert current_locked_row.accepted_at is None
+    assert db.scalar.call_args_list[3].args[0]._execution_options[
+        "populate_existing"
+    ]
+    db.commit.assert_not_called()
+
+
+def test_owner_and_admin_can_manage_invitations_but_members_cannot():
+    for role in ("owner", "admin"):
+        db = MagicMock()
+        db.scalar.side_effect = [
+            Organization(id=7, deleted_at=None),
+            SimpleNamespace(role=role),
+        ]
+        assert organization_invitations.get_manageable_organization(
+            db=db, organization_id=7, user_id=11, lock=True
+        ).id == 7
+        assert all(
+            "FOR UPDATE" in str(call.args[0].compile())
+            for call in db.scalar.call_args_list
+        )
+
+    db = MagicMock()
+    db.scalar.side_effect = [
+        Organization(id=7, deleted_at=None),
+        SimpleNamespace(role="member"),
+    ]
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.get_manageable_organization(
+            db=db, organization_id=7, user_id=22
+        )
+    assert error.value.status_code == 403
+
+
 def test_manager_cannot_revoke_invitation_from_another_organization(monkeypatch):
     monkeypatch.setattr(
         organization_invitations,
         "get_manageable_organization",
-        lambda db, organization_id, user_id: Organization(id=organization_id),
+        lambda db, organization_id, user_id, **kwargs: Organization(id=organization_id),
     )
     db = MagicMock()
     db.scalar.return_value = None
@@ -327,7 +1059,7 @@ def test_manager_cannot_revoke_invitation_from_another_organization(monkeypatch)
 
 def test_organization_member_cannot_manage_invitations():
     db = MagicMock()
-    db.get.side_effect = [
+    db.scalar.side_effect = [
         Organization(id=7, deleted_at=None),
         SimpleNamespace(role="member"),
     ]

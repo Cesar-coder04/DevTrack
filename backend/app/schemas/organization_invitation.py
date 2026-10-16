@@ -2,12 +2,19 @@
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    model_validator,
+)
 
 InvitationRole = Literal["admin", "member"]
 InvitationStatus = Literal[
     "pending",
     "accepted",
+    "rejected",
     "revoked",
     "expired",
 ]
@@ -16,6 +23,10 @@ InvitationStatus = Literal[
 class OrganizationInvitationCreate(BaseModel):
     email: EmailStr
     role: InvitationRole = "member"
+
+
+class OrganizationInvitationToken(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
 
 
 class OrganizationInvitationResponse(BaseModel):
@@ -37,6 +48,7 @@ class OrganizationInvitationResponse(BaseModel):
             return value
 
         accepted_at = value.accepted_at
+        rejected_at = value.rejected_at
         revoked_at = value.revoked_at
         expires_at = value.expires_at
         normalized_expiry = expires_at
@@ -47,6 +59,8 @@ class OrganizationInvitationResponse(BaseModel):
 
         if accepted_at is not None:
             invitation_status = "accepted"
+        elif rejected_at is not None:
+            invitation_status = "rejected"
         elif revoked_at is not None:
             invitation_status = "revoked"
         elif normalized_expiry <= datetime.now(timezone.utc):

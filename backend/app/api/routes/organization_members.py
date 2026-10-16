@@ -2,13 +2,14 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.organization import Organization
+from app.models.organization_invitation import OrganizationInvitation
 from app.models.organization_member import OrganizationMember
 from app.models.user import User
 from app.schemas.organization_member import (
@@ -27,8 +28,17 @@ def get_organization_and_membership(
     organization_id: int,
     current_user: User,
     db: Session,
+    *,
+    lock: bool = False,
 ):
-    organization = db.get(Organization, organization_id)
+    organization_query = select(Organization).where(
+        Organization.id == organization_id
+    )
+    if lock:
+        organization_query = organization_query.execution_options(
+            populate_existing=True
+        ).with_for_update()
+    organization = db.scalar(organization_query)
 
     if organization is None or organization.deleted_at is not None:
         raise HTTPException(
@@ -36,10 +46,15 @@ def get_organization_and_membership(
             detail="Organización no encontrada.",
         )
 
-    membership = db.get(
-        OrganizationMember,
-        (organization_id, current_user.id),
+    membership_query = select(OrganizationMember).where(
+        OrganizationMember.organization_id == organization_id,
+        OrganizationMember.user_id == current_user.id,
     )
+    if lock:
+        membership_query = membership_query.execution_options(
+            populate_existing=True
+        ).with_for_update()
+    membership = db.scalar(membership_query)
 
     if membership is None:
         raise HTTPException(
@@ -99,7 +114,7 @@ def add_member(
     current_user: User = Depends(get_current_user),
 ):
     organization, current_membership = get_organization_and_membership(
-        organization_id, current_user, db
+        organization_id, current_user, db, lock=True
     )
     require_manager(current_membership.role)
 
@@ -113,9 +128,14 @@ def add_member(
             detail="Usuario no encontrado o inactivo.",
         )
 
-    existing_membership = db.get(
-        OrganizationMember,
-        (organization_id, target_user.id),
+    existing_membership = db.scalar(
+        select(OrganizationMember)
+        .where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == target_user.id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
 
     if existing_membership is not None:
@@ -137,9 +157,35 @@ def add_member(
     )
 
     try:
+        now = datetime.now(timezone.utc)
+        pending_invitations = db.scalars(
+            select(OrganizationInvitation)
+            .where(
+                OrganizationInvitation.organization_id == organization_id,
+                func.lower(OrganizationInvitation.email)
+                == target_user.email.strip().casefold(),
+                OrganizationInvitation.accepted_at.is_(None),
+                OrganizationInvitation.rejected_at.is_(None),
+                OrganizationInvitation.revoked_at.is_(None),
+                OrganizationInvitation.expires_at > now,
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).all()
+        for invitation in pending_invitations:
+            invitation.revoked_at = now
+
         db.add(membership)
-        db.commit()
+        db.flush()
         db.refresh(membership)
+        response = OrganizationMemberResponse(
+            user_id=target_user.id,
+            username=target_user.username,
+            display_name=target_user.display_name,
+            role=membership.role,
+            joined_at=getattr(membership, "created_at", None),
+        )
+        db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -150,13 +196,7 @@ def add_member(
         db.rollback()
         raise
 
-    return OrganizationMemberResponse(
-        user_id=target_user.id,
-        username=target_user.username,
-        display_name=target_user.display_name,
-        role=membership.role,
-        joined_at=getattr(membership, "created_at", None),
-    )
+    return response
 
 
 @router.patch("/{user_id}", response_model=OrganizationMemberResponse)
@@ -168,7 +208,7 @@ def update_member_role(
     current_user: User = Depends(get_current_user),
 ):
     organization, current_membership = get_organization_and_membership(
-        organization_id, current_user, db
+        organization_id, current_user, db, lock=True
     )
     require_manager(current_membership.role)
 
@@ -178,9 +218,14 @@ def update_member_role(
             detail="No se puede cambiar el rol del propietario.",
         )
 
-    target_membership = db.get(
-        OrganizationMember,
-        (organization_id, user_id),
+    target_membership = db.scalar(
+        select(OrganizationMember)
+        .where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
 
     if target_membership is None:
@@ -200,19 +245,21 @@ def update_member_role(
     target_membership.role = role_data.role
 
     try:
-        db.commit()
+        db.flush()
         db.refresh(target_membership)
+        response = OrganizationMemberResponse(
+            user_id=target_user.id,
+            username=target_user.username,
+            display_name=target_user.display_name,
+            role=target_membership.role,
+            joined_at=getattr(target_membership, "created_at", None),
+        )
+        db.commit()
     except Exception:
         db.rollback()
         raise
 
-    return OrganizationMemberResponse(
-        user_id=target_user.id,
-        username=target_user.username,
-        display_name=target_user.display_name,
-        role=target_membership.role,
-        joined_at=getattr(target_membership, "created_at", None),
-    )
+    return response
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -223,7 +270,7 @@ def remove_member(
     current_user: User = Depends(get_current_user),
 ):
     organization, current_membership = get_organization_and_membership(
-        organization_id, current_user, db
+        organization_id, current_user, db, lock=True
     )
     require_manager(current_membership.role)
 
@@ -233,9 +280,14 @@ def remove_member(
             detail="No se puede eliminar al propietario de la organización.",
         )
 
-    target_membership = db.get(
-        OrganizationMember,
-        (organization_id, user_id),
+    target_membership = db.scalar(
+        select(OrganizationMember)
+        .where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+        )
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
 
     if target_membership is None:

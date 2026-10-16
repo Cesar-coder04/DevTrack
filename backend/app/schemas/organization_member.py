@@ -7,11 +7,11 @@ from pydantic import BaseModel, Field
 
 class OrganizationMemberCreate(BaseModel):
     username: str = Field(min_length=3, max_length=50)
-    role: Literal["admin", "member", "viewer"] = "member"
+    role: Literal["admin", "member"] = "member"
 
 
 class OrganizationMemberRoleUpdate(BaseModel):
-    role: Literal["admin", "member", "viewer"]
+    role: Literal["admin", "member"]
 
 
 class OrganizationMemberResponse(BaseModel):
