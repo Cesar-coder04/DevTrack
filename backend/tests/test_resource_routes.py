@@ -52,7 +52,7 @@ from app.schemas.work_item_comment import WorkItemCommentResponse
 from app.schemas.work_item_tag import WorkItemTagResponse
 
 
-NOW = datetime(2026, 10, 15, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 INVITATION_TOKEN = "opaque-token-value-long-enough-for-validation"
 
 
@@ -103,7 +103,7 @@ def make_notification(**overrides):
     return Notification(**values)
 
 
-def test_invitation_creation_hashes_token_and_derives_pending_status(monkeypatch):
+def test_owner_can_invite_admin_and_creation_hashes_token(monkeypatch):
     monkeypatch.setattr(
         organization_invitations,
         "get_manageable_organization",
@@ -161,6 +161,33 @@ def test_invitation_creation_hashes_token_and_derives_pending_status(monkeypatch
     assert "token_hash" not in response.model_dump()
     assert sent[0]["recipient"] == "invitee@example.com"
     assert "raw-invitation-token" in sent[0]["invitation_url"]
+
+
+def test_admin_cannot_invite_admin(monkeypatch):
+    monkeypatch.setattr(
+        organization_invitations,
+        "get_manageable_organization",
+        lambda db, organization_id, user_id, **kwargs: Organization(
+            id=organization_id, owner_id=99, name="Acme"
+        ),
+    )
+    db = MagicMock()
+
+    with pytest.raises(HTTPException) as error:
+        organization_invitations.create_invitation(
+            organization_id=7,
+            data=OrganizationInvitationCreate(
+                email="invitee@example.com",
+                role="admin",
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    assert error.value.status_code == 403
+    db.scalar.assert_not_called()
+    db.add.assert_not_called()
+    db.commit.assert_not_called()
 
 
 def test_invitation_schema_derives_all_persisted_states():
@@ -432,7 +459,7 @@ def test_pending_invitation_reuse_rotates_token_and_invalidates_previous(monkeyp
         organization_invitations,
         "get_manageable_organization",
         lambda db, organization_id, user_id, **kwargs: Organization(
-            id=organization_id, name="Acme"
+            id=organization_id, owner_id=user_id, name="Acme"
         ),
     )
     monkeypatch.setattr(
@@ -792,6 +819,7 @@ def test_direct_member_add_serializes_and_revokes_pending_invitations():
         display_name="Invitee",
         is_active=True,
     )
+    joined_at = NOW
     pending_invitation = make_invitation()
     db = MagicMock()
     db.scalar.side_effect = [
@@ -803,6 +831,9 @@ def test_direct_member_add_serializes_and_revokes_pending_invitations():
     db.scalars.return_value.all.return_value = [pending_invitation]
     added = []
     db.add.side_effect = added.append
+    db.refresh.side_effect = lambda membership: setattr(
+        membership, "joined_at", joined_at
+    )
 
     response = organization_members.add_member(
         organization_id=7,
@@ -826,8 +857,167 @@ def test_direct_member_add_serializes_and_revokes_pending_invitations():
     assert "FROM organization_invitations" in pending_query
     assert "FOR UPDATE" in pending_query
     assert response.user_id == target_user.id
+    assert response.joined_at == joined_at
     assert added[0].user_id == target_user.id
     assert pending_invitation.revoked_at is not None
+    db.commit.assert_called_once()
+
+
+def test_admin_cannot_directly_add_another_admin():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=99,
+        deleted_at=None,
+    )
+    admin_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="admin",
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [organization, admin_membership]
+
+    with pytest.raises(HTTPException) as error:
+        organization_members.add_member(
+            organization_id=7,
+            member_data=OrganizationMemberCreate(
+                username="invitee",
+                role="admin",
+            ),
+            db=db,
+            current_user=SimpleNamespace(id=11),
+        )
+
+    assert error.value.status_code == 403
+    assert db.scalar.call_count == 2
+    db.add.assert_not_called()
+    db.commit.assert_not_called()
+
+
+def test_owner_can_directly_add_an_admin():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=11,
+        deleted_at=None,
+    )
+    owner_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="owner",
+    )
+    target_user = SimpleNamespace(
+        id=22,
+        username="invitee",
+        email="invitee@example.com",
+        display_name="Invitee",
+        is_active=True,
+    )
+    joined_at = NOW
+    db = MagicMock()
+    db.scalar.side_effect = [
+        organization,
+        owner_membership,
+        target_user,
+        None,
+    ]
+    db.scalars.return_value.all.return_value = []
+    added = []
+    db.add.side_effect = added.append
+    db.refresh.side_effect = lambda membership: setattr(
+        membership, "joined_at", joined_at
+    )
+
+    response = organization_members.add_member(
+        organization_id=7,
+        member_data=OrganizationMemberCreate(
+            username="invitee",
+            role="admin",
+        ),
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    assert response.role == "admin"
+    assert added[0].role == "admin"
+    db.commit.assert_called_once()
+
+
+def test_list_members_returns_joined_at():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=11,
+        deleted_at=None,
+    )
+    current_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="owner",
+    )
+    joined_at = NOW
+    target_membership = SimpleNamespace(role="member", joined_at=joined_at)
+    target_user = SimpleNamespace(
+        id=22,
+        username="invitee",
+        display_name="Invitee",
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [organization, current_membership]
+    db.execute.return_value.all.return_value = [(target_membership, target_user)]
+
+    response = organization_members.list_members(
+        organization_id=7,
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    assert response[0].joined_at == joined_at
+
+
+def test_member_role_update_returns_joined_at():
+    organization = Organization(
+        id=7,
+        name="Acme",
+        slug="acme",
+        owner_id=99,
+        deleted_at=None,
+    )
+    current_membership = OrganizationMember(
+        organization_id=7,
+        user_id=11,
+        role="owner",
+    )
+    joined_at = NOW
+    target_membership = OrganizationMember(
+        organization_id=7,
+        user_id=22,
+        role="member",
+        joined_at=joined_at,
+    )
+    target_user = SimpleNamespace(
+        id=22,
+        username="invitee",
+        display_name="Invitee",
+    )
+    db = MagicMock()
+    db.scalar.side_effect = [organization, current_membership, target_membership]
+    db.get.return_value = target_user
+
+    response = organization_members.update_member_role(
+        organization_id=7,
+        user_id=22,
+        role_data=OrganizationMemberRoleUpdate(role="admin"),
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    assert response.role == "admin"
+    assert response.joined_at == joined_at
     db.commit.assert_called_once()
 
 

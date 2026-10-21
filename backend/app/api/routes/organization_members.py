@@ -96,7 +96,7 @@ def list_members(
             username=user.username,
             display_name=user.display_name,
             role=membership.role,
-            joined_at=getattr(membership, "created_at", None),
+            joined_at=membership.joined_at,
         )
         for membership, user in results
     ]
@@ -117,6 +117,12 @@ def add_member(
         organization_id, current_user, db, lock=True
     )
     require_manager(current_membership.role)
+
+    if current_membership.role == "admin" and member_data.role == "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Un administrador no puede añadir miembros con el rol de administrador.",
+        )
 
     target_user = db.scalar(
         select(User).where(User.username == member_data.username)
@@ -183,7 +189,7 @@ def add_member(
             username=target_user.username,
             display_name=target_user.display_name,
             role=membership.role,
-            joined_at=getattr(membership, "created_at", None),
+            joined_at=membership.joined_at,
         )
         db.commit()
     except IntegrityError:
@@ -252,7 +258,7 @@ def update_member_role(
             username=target_user.username,
             display_name=target_user.display_name,
             role=target_membership.role,
-            joined_at=getattr(target_membership, "created_at", None),
+            joined_at=target_membership.joined_at,
         )
         db.commit()
     except Exception:

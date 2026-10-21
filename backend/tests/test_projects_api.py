@@ -36,8 +36,92 @@ def test_list_projects_returns_empty_list():
         assert response.json() == []
         statement = fake_db.scalars.call_args.args[0]
         assert "project_members.user_id" in str(statement)
+        assert "projects.organization_id IS NULL" in str(statement)
+        assert "projects.archived_at IS NULL" in str(statement)
+        assert "projects.deleted_at IS NULL" in str(statement)
         assert TEST_USER.id in statement.compile().params.values()
 
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_list_projects_excludes_deleted_personal_project():
+    deleted_project = SimpleNamespace(
+        id=1,
+        name="Proyecto eliminado",
+        description=None,
+        status="active",
+        created_at=datetime.now(timezone.utc),
+        organization_name=None,
+        deleted_at=datetime.now(timezone.utc),
+    )
+    fake_db = MagicMock()
+
+    def scalars(statement):
+        result = MagicMock()
+        if "projects.deleted_at IS NULL" in str(statement):
+            result.all.return_value = []
+        else:
+            result.all.return_value = [deleted_project]
+        return result
+
+    fake_db.scalars.side_effect = scalars
+
+    def override_get_db():
+        yield fake_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
+    try:
+        with TestClient(app) as client:
+            response = client.get("/projects/")
+
+        assert response.status_code == 200
+        assert response.json() == []
+        statement = fake_db.scalars.call_args.args[0]
+        assert "projects.deleted_at IS NULL" in str(statement)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_list_projects_includes_null_organization_name_for_personal_project():
+    project_created_at = datetime.now(timezone.utc)
+    project = SimpleNamespace(
+        id=1,
+        name="Proyecto personal",
+        description=None,
+        status="active",
+        created_at=project_created_at,
+    )
+    fake_db = MagicMock()
+    fake_db.scalars.return_value.all.return_value = [project]
+
+    def override_get_db():
+        yield fake_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+
+    try:
+        with TestClient(app) as client:
+            response = client.get("/projects/")
+
+        assert response.status_code == 200
+        project_response = response.json()[0]
+        assert project_response["id"] == 1
+        assert project_response["name"] == "Proyecto personal"
+        assert project_response["description"] is None
+        assert project_response["status"] == "active"
+        assert (
+            datetime.fromisoformat(
+                project_response["created_at"].replace("Z", "+00:00")
+            )
+            == project_created_at
+        )
+        assert project_response["organization_name"] is None
     finally:
         app.dependency_overrides.pop(get_db, None)
         app.dependency_overrides.pop(get_current_user, None)

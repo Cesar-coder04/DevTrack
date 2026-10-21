@@ -82,7 +82,24 @@ function DashboardSidebar({ profile }: DashboardSidebarProps) {
   return (
     <aside className="flex h-screen w-[220px] shrink-0 flex-col bg-graphite text-ivory">
       <header className="border-b border-ivory/10 px-5 py-6">
-        <p className="text-lg font-semibold tracking-tight">DevTrack</p>
+        <div className="flex items-center gap-3">
+          <span className="grid size-9 shrink-0 place-items-center rounded-sm bg-brass">
+            <svg
+              aria-hidden="true"
+              className="size-5 text-graphite"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="1.5"
+              viewBox="0 0 24 24"
+            >
+              <path d="m12 3 8 4-8 4-8-4 8-4Z" />
+              <path d="m4 12 8 4 8-4M4 17l8 4 8-4" />
+            </svg>
+          </span>
+          <p className="text-lg font-semibold tracking-tight">DevTrack</p>
+        </div>
         <p className="mt-1 font-mono text-[10px] tracking-[0.14em] text-ivory/55">
           PROJECT WORKSPACE
         </p>

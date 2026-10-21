@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import Dashboard from "./Dashboard";
+import InvitationAcceptance, {
+  type InvitationIntent,
+} from "./InvitationAcceptance";
 import LoginPage from "./LoginPage";
 import { isUserProfile, type UserProfile } from "./userProfile";
+
+interface AppProps {
+  invitationIntent: InvitationIntent | null;
+}
 
 type SessionState =
   | { status: "checking" }
@@ -68,10 +75,12 @@ function checkSession(): Promise<SessionState> {
   return sessionCheckInFlight;
 }
 
-function App() {
+function App({ invitationIntent }: AppProps) {
   const [sessionState, setSessionState] = useState<SessionState>({
     status: "checking",
   });
+  const [pendingInvitation, setPendingInvitation] =
+    useState<InvitationIntent | null>(invitationIntent);
   const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
@@ -89,6 +98,18 @@ function App() {
     };
   }, [retryCount]);
 
+  if (pendingInvitation?.status === "invalid") {
+    return (
+      <InvitationAcceptance
+        intent={pendingInvitation}
+        onAuthenticationRequired={() =>
+          setSessionState({ status: "unauthenticated" })
+        }
+        onReturnToDashboard={() => setPendingInvitation(null)}
+      />
+    );
+  }
+
   if (sessionState.status === "checking") {
     return (
       <main
@@ -102,6 +123,18 @@ function App() {
   }
 
   if (sessionState.status === "authenticated") {
+    if (pendingInvitation) {
+      return (
+        <InvitationAcceptance
+          intent={pendingInvitation}
+          onAuthenticationRequired={() =>
+            setSessionState({ status: "unauthenticated" })
+          }
+          onReturnToDashboard={() => setPendingInvitation(null)}
+        />
+      );
+    }
+
     return <Dashboard profile={sessionState.profile} />;
   }
 

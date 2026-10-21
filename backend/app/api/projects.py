@@ -26,7 +26,12 @@ def list_projects(
     query = (
         select(Project)
         .join(ProjectMember, ProjectMember.project_id == Project.id)
-        .where(ProjectMember.user_id == user.id)
+        .where(
+            ProjectMember.user_id == user.id,
+            Project.organization_id.is_(None),
+            Project.archived_at.is_(None),
+            Project.deleted_at.is_(None),
+        )
     )
 
     return db.scalars(query).all()

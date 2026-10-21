@@ -172,6 +172,12 @@ def create_invitation(
         current_user.id,
         lock=True,
     )
+    if data.role == "admin" and organization.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo el propietario puede invitar administradores.",
+        )
+
     normalized_email = normalize_email(str(data.email))
     invited_user = db.scalar(
         select(User).where(func.lower(User.email) == normalized_email)
