@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.api.project_access import require_project_organization_membership
+from app.api.work_item_access import ensure_work_item_active
 from app.db.session import get_db
 from app.models.user import User
 from app.models.project import Project
@@ -52,6 +53,8 @@ def get_accessible_work_item(
             status_code=403,
             detail="No tienes acceso a este proyecto.",
         )
+
+    ensure_work_item_active(item)
 
     return item
 

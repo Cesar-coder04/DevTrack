@@ -12,6 +12,7 @@ from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
 from app.schemas.work_item import (
     WorkItemCreate,
+    WorkItemListResponse,
     WorkItemResponse,
     WorkItemUpdate,
 )
@@ -79,6 +80,7 @@ def test_create_work_item_uses_mapped_fields_and_returns_public_aliases(
     assert response.assignee_id is None
     assert response.model_dump()["reporter_id"] == 11
     assert "created_by_id" not in response.model_dump()
+    assert "assignee_display_name" not in response.model_dump()
 
 
 def test_list_work_items_filters_by_mapped_assignee_field(monkeypatch):
@@ -89,20 +91,66 @@ def test_list_work_items_filters_by_mapped_assignee_field(monkeypatch):
     )
     item = make_work_item()
     db = MagicMock()
-    db.scalars.return_value.all.return_value = [item]
+    db.execute.return_value.all.return_value = [(item, "Visible Assignee")]
 
     result = work_items.list_work_items(
         project_id=7,
         status_filter="resolved",
+        priority_filter="high",
         assignee_id=13,
         db=db,
         current_user=SimpleNamespace(id=11),
     )
 
-    statement = str(db.scalars.call_args.args[0])
+    statement = str(db.execute.call_args.args[0])
     assert "work_items.assigned_to_id" in statement
-    assert result == [item]
-    assert WorkItemResponse.model_validate(result[0]).assignee_id == 13
+    assert "LEFT OUTER JOIN users" in statement
+    assert "users.display_name" in statement
+    assert "work_items.status" in statement
+    assert "work_items.priority" in statement
+    assert "work_items.created_at DESC" in statement
+    assert [response.assignee_id for response in result] == [13]
+    assert [response.assignee_display_name for response in result] == [
+        "Visible Assignee"
+    ]
+    assert isinstance(result[0], WorkItemListResponse)
+    assert result[0].model_dump()["assignee_display_name"] == "Visible Assignee"
+    assert "email" not in result[0].model_dump()
+    assert "bio" not in result[0].model_dump()
+    assert "password_hash" not in result[0].model_dump()
+
+
+def test_list_work_items_returns_null_assignee_fields_for_unassigned_items(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        work_items,
+        "get_project_access",
+        lambda project_id, current_user, db: (Project(id=project_id), None),
+    )
+    assigned_item = make_work_item()
+    unassigned_item = make_work_item(
+        id=4,
+        assigned_to_id=None,
+        title="Unassigned task",
+    )
+    db = MagicMock()
+    db.execute.return_value.all.return_value = [
+        (assigned_item, "Visible Assignee"),
+        (unassigned_item, None),
+    ]
+
+    result = work_items.list_work_items(
+        project_id=7,
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    assert len(result) == 2
+    assert [(item.assignee_id, item.assignee_display_name) for item in result] == [
+        (13, "Visible Assignee"),
+        (None, None),
+    ]
 
 
 def test_update_work_item_supports_partial_updates_and_public_assignee_field(
@@ -149,6 +197,9 @@ def test_update_work_item_supports_partial_updates_and_public_assignee_field(
 
     assert checked_assignees[-1] == 17
     assert assigned.assigned_to_id == 17
+    assert "assignee_display_name" not in WorkItemResponse.model_validate(
+        assigned
+    ).model_dump()
     assert isinstance(db.add.call_args.args[0], WorkItemHistory)
     assert db.add.call_args.args[0].changed_by_id == 11
 
@@ -163,6 +214,41 @@ def test_update_work_item_supports_partial_updates_and_public_assignee_field(
     )
 
     assert due_date_updated.due_date == date(2026, 10, 20)
+
+
+def test_get_work_item_response_does_not_include_list_only_assignee_name(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        work_items,
+        "get_project_access",
+        lambda project_id, current_user, db: (Project(id=project_id), None),
+    )
+    item = make_work_item()
+    db = MagicMock()
+    db.get.return_value = item
+
+    result = work_items.get_work_item(
+        project_id=7,
+        work_item_id=item.id,
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+
+    response = WorkItemResponse.model_validate(result)
+    assert "assignee_display_name" not in response.model_dump()
+
+
+def test_non_list_work_item_endpoints_keep_the_base_response_schema():
+    response_models = {
+        route.endpoint: route.response_model
+        for route in work_items.router.routes
+    }
+
+    assert response_models[work_items.create_work_item] is WorkItemResponse
+    assert response_models[work_items.update_work_item] is WorkItemResponse
+    assert response_models[work_items.get_work_item] is WorkItemResponse
+    assert response_models[work_items.list_work_items] == list[WorkItemListResponse]
 
 
 @pytest.mark.parametrize(

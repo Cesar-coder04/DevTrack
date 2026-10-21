@@ -60,3 +60,7 @@ class WorkItemResponse(BaseModel):
     due_date: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkItemListResponse(WorkItemResponse):
+    assignee_display_name: str | None = None

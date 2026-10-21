@@ -2,11 +2,12 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.api.project_access import require_project_organization_membership
+from app.api.work_item_access import ensure_work_item_active
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.project_member import ProjectMember
@@ -15,6 +16,7 @@ from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
 from app.schemas.work_item import (
     WorkItemCreate,
+    WorkItemListResponse,
     WorkItemResponse,
     WorkItemStatus,
     WorkItemUpdate,
@@ -47,7 +49,6 @@ def get_project_access(
         db,
         project,
         current_user.id,
-        allow_unorganized=False,
         detail="No perteneces a la organización.",
     )
 
@@ -141,7 +142,7 @@ def create_work_item(
     return item
 
 
-@router.get("/", response_model=list[WorkItemResponse])
+@router.get("/", response_model=list[WorkItemListResponse])
 def list_work_items(
     project_id: int,
     status_filter: WorkItemStatus | None = None,
@@ -152,7 +153,12 @@ def list_work_items(
 ):
     get_project_access(project_id, current_user, db)
 
-    statement = select(WorkItem).where(WorkItem.project_id == project_id)
+    statement = (
+        select(WorkItem, User.display_name)
+        .outerjoin(User, WorkItem.assigned_to_id == User.id)
+        .where(WorkItem.project_id == project_id)
+        .where(WorkItem.deleted_at.is_(None))
+    )
 
     if status_filter:
         statement = statement.where(WorkItem.status == status_filter)
@@ -165,7 +171,13 @@ def list_work_items(
 
     statement = statement.order_by(WorkItem.created_at.desc())
 
-    return list(db.scalars(statement).all())
+    rows = db.execute(statement).all()
+    return [
+        WorkItemListResponse.model_validate(item).model_copy(
+            update={"assignee_display_name": assignee_display_name}
+        )
+        for item, assignee_display_name in rows
+    ]
 
 
 @router.get("/{work_item_id}", response_model=WorkItemResponse)
@@ -184,6 +196,8 @@ def get_work_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tarea no encontrada.",
         )
+
+    ensure_work_item_active(item)
 
     return item
 
@@ -205,6 +219,8 @@ def update_work_item(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tarea no encontrada.",
         )
+
+    ensure_work_item_active(item)
 
     changes = item_data.model_dump(exclude_unset=True)
 
@@ -275,8 +291,34 @@ def delete_work_item(
             detail="Tarea no encontrada.",
         )
 
+    ensure_work_item_active(item)
+
     try:
-        db.delete(item)
+        deleted_at = datetime.now(timezone.utc)
+        result = db.execute(
+            update(WorkItem.__table__)
+            .where(
+                WorkItem.id == item.id,
+                WorkItem.deleted_at.is_(None),
+            )
+            .values(deleted_at=deleted_at)
+        )
+        if result.rowcount != 1:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Tarea no encontrada.",
+            )
+
+        db.expire(item, ["deleted_at"])
+        db.add(
+            WorkItemHistory(
+                work_item_id=item.id,
+                changed_by_id=current_user.id,
+                field_name="deleted",
+                old_value=None,
+                new_value=deleted_at.isoformat(),
+            )
+        )
         db.commit()
     except Exception:
         db.rollback()

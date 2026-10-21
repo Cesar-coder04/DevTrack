@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { UserProfile } from "./userProfile";
 import DashboardSidebar from "./DashboardSidebar";
 import ProjectCard, { type ProjectSummary } from "./ProjectCard";
+import ProjectDetail from "./ProjectDetail";
 
 interface DashboardProps {
   profile: UserProfile;
@@ -67,7 +68,11 @@ function isProjectSummary(value: unknown): value is ProjectSummary {
     typeof project.created_at === "string" &&
     Number.isFinite(Date.parse(project.created_at)) &&
     (typeof project.organization_name === "string" ||
-      project.organization_name === null)
+      project.organization_name === null) &&
+    (project.organization_id === undefined ||
+      project.organization_id === null ||
+      (typeof project.organization_id === "number" &&
+        Number.isSafeInteger(project.organization_id)))
   );
 }
 
@@ -150,7 +155,10 @@ function fetchProjects(): Promise<ProjectSummary[]> {
         throw new InvalidProjectResponseError();
       }
 
-      return responseBody;
+      return responseBody.map((project) => ({
+        ...project,
+        organization_id: null,
+      }));
     })().finally(() => {
       projectsRequestInFlight = null;
     });
@@ -235,6 +243,7 @@ async function fetchOrganizationProjects(
       description: project.description,
       status: project.status,
       created_at: project.created_at,
+      organization_id: organization.id,
       organization_name: organization.name,
     }));
 }
@@ -340,6 +349,10 @@ function Dashboard({ profile }: DashboardProps) {
   const [createProjectNotice, setCreateProjectNotice] = useState<
     string | null
   >(null);
+  const [selectedProject, setSelectedProject] =
+    useState<ProjectSummary | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const dashboardScrollTop = useRef(0);
   const createRequestInFlight = useRef(false);
 
   useEffect(() => {
@@ -371,6 +384,12 @@ function Dashboard({ profile }: DashboardProps) {
       isMounted = false;
     };
   }, [retryCount]);
+
+  useEffect(() => {
+    mainRef.current?.scrollTo({
+      top: selectedProject ? 0 : dashboardScrollTop.current,
+    });
+  }, [selectedProject]);
 
   function loadOrganizations() {
     setOrganizationsState({ status: "loading" });
@@ -472,13 +491,17 @@ function Dashboard({ profile }: DashboardProps) {
           description: responseBody.description,
           status: responseBody.status,
           created_at: responseBody.created_at,
+          organization_id: selectedOrganization.id,
           organization_name: selectedOrganization.name,
         };
       } else {
         if (!isProjectSummary(responseBody)) {
           throw new InvalidProjectResponseError();
         }
-        createdProject = responseBody;
+        createdProject = {
+          ...responseBody,
+          organization_id: null,
+        };
       }
 
       setProjectsState((currentState) => {
@@ -510,7 +533,10 @@ function Dashboard({ profile }: DashboardProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-canvas text-ink">
       <DashboardSidebar profile={profile} />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+      <main
+        className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto"
+        ref={mainRef}
+      >
         <header className="mx-6 mt-6 mb-4 flex h-14 shrink-0 items-center justify-end rounded-md bg-graphite px-4 text-ivory lg:mx-8 lg:mt-8">
           <span
             aria-label="Notificaciones"
@@ -532,6 +558,13 @@ function Dashboard({ profile }: DashboardProps) {
             </svg>
           </span>
         </header>
+        {selectedProject ? (
+          <ProjectDetail
+            onBack={() => setSelectedProject(null)}
+            project={selectedProject}
+          />
+        ) : (
+          <>
         <section
           aria-labelledby="dashboard-title"
           className="flex-1 px-8 py-10 lg:px-16 lg:py-12"
@@ -796,11 +829,21 @@ function Dashboard({ profile }: DashboardProps) {
             ) : (
               <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2 xl:grid-cols-3">
                 {projectsState.projects.map((project) => (
-                  <ProjectCard key={project.id} project={project} />
+                  <ProjectCard
+                    key={project.id}
+                    onSelect={(selected) => {
+                      dashboardScrollTop.current =
+                        mainRef.current?.scrollTop ?? 0;
+                      setSelectedProject(selected);
+                    }}
+                    project={project}
+                  />
                 ))}
               </div>
             ))}
         </section>
+          </>
+        )}
       </main>
     </div>
   );
