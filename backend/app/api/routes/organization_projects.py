@@ -18,6 +18,11 @@ from app.schemas.organization_project import (
     OrganizationProjectResponse,
     OrganizationProjectUpdate,
 )
+from app.services.project_service import (
+    PROJECT_NAME_CONFLICT_DETAIL,
+    ensure_project_name_available,
+    is_project_name_unique_violation,
+)
 
 router = APIRouter(
     prefix="/organizations/{organization_id}/projects",
@@ -102,6 +107,12 @@ def create_project(
     current_user: User = Depends(get_current_user),
 ):
     get_organization_access(organization_id, current_user, db)
+    ensure_project_name_available(
+        db,
+        name=project_data.name,
+        owner_id=current_user.id,
+        organization_id=organization_id,
+    )
 
     project = Project(
         name=project_data.name,
@@ -125,8 +136,13 @@ def create_project(
         db.refresh(project)
         return project
 
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        if is_project_name_unique_violation(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=PROJECT_NAME_CONFLICT_DETAIL,
+            ) from None
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No se pudo crear el proyecto.",

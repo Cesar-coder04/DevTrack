@@ -129,6 +129,7 @@ def test_list_projects_includes_null_organization_name_for_personal_project():
 
 def test_create_project_returns_created_project():
     fake_db = MagicMock()
+    fake_db.scalar.return_value = None
     fake_db_project = MagicMock()
     fake_db_project.id = 1
     fake_db_project.name = "Proyecto de prueba"

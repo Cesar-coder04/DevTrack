@@ -1,6 +1,14 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (
+    Computed,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -8,6 +16,18 @@ from app.db.base import Base
 
 class Project(Base):
     __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint(
+            "_active_organization_id",
+            "name",
+            name="uq_projects_active_organization_name",
+        ),
+        UniqueConstraint(
+            "_active_personal_owner_id",
+            "name",
+            name="uq_projects_active_personal_owner_name",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -71,4 +91,22 @@ class Project(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+    _active_organization_id: Mapped[int | None] = mapped_column(
+        Integer,
+        Computed(
+            "CASE WHEN organization_id IS NOT NULL "
+            "AND archived_at IS NULL AND deleted_at IS NULL "
+            "THEN organization_id ELSE NULL END"
+        ),
+    )
+
+    _active_personal_owner_id: Mapped[int | None] = mapped_column(
+        Integer,
+        Computed(
+            "CASE WHEN organization_id IS NULL "
+            "AND archived_at IS NULL AND deleted_at IS NULL "
+            "THEN owner_id ELSE NULL END"
+        ),
     )
