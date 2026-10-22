@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { UserProfile } from "./userProfile";
 import DashboardSidebar from "./DashboardSidebar";
+import { type DashboardView } from "./DashboardSidebar";
 import ProjectCard, { type ProjectSummary } from "./ProjectCard";
 import ProjectDetail from "./ProjectDetail";
+import MyTasks from "./MyTasks";
+import Issues, { type Issue } from "./Issues";
+import DashboardHome from "./DashboardHome";
+import WorkItemDetail from "./WorkItemDetail";
+import type { MyTask } from "./MyTasks";
 
 interface DashboardProps {
   profile: UserProfile;
@@ -28,6 +34,19 @@ type OrganizationsState =
   | { status: "loaded"; organizations: OrganizationSummary[] };
 
 type ProjectScope = "personal" | "organization";
+type ProjectTypeFilter = "all" | ProjectScope;
+
+interface ProjectFilters {
+  name: string;
+  type: ProjectTypeFilter;
+  organizationId: string;
+}
+
+const emptyProjectFilters: ProjectFilters = {
+  name: "",
+  type: "all",
+  organizationId: "",
+};
 
 class ProjectRequestError extends Error {
   constructor(readonly statusCode: number) {
@@ -351,9 +370,55 @@ function Dashboard({ profile }: DashboardProps) {
   >(null);
   const [selectedProject, setSelectedProject] =
     useState<ProjectSummary | null>(null);
+  const [activeView, setActiveView] = useState<DashboardView>("home");
+  const [projectFilters, setProjectFilters] =
+    useState<ProjectFilters>(emptyProjectFilters);
+  const [selectedTask, setSelectedTask] = useState<MyTask | null>(null);
+  const [initialIssue, setInitialIssue] = useState<Issue | null>(null);
+  const [detailReturnView, setDetailReturnView] = useState<DashboardView>("home");
   const mainRef = useRef<HTMLElement | null>(null);
   const dashboardScrollTop = useRef(0);
   const createRequestInFlight = useRef(false);
+
+  const projectOrganizationOptions =
+    projectsState.status === "loaded"
+      ? [...
+          new Map(
+            projectsState.projects
+              .filter(
+                (project) =>
+                  project.organization_id !== null &&
+                  project.organization_name !== null,
+              )
+              .map((project) => [
+                project.organization_id as number,
+                project.organization_name as string,
+              ]),
+          ).entries(),
+        ].sort((left, right) => left[1].localeCompare(right[1], "es"))
+      : [];
+  const filteredProjects =
+    projectsState.status === "loaded"
+      ? projectsState.projects.filter((project) => {
+          const searchName = projectFilters.name.trim().toLocaleLowerCase();
+          const matchesName = project.name
+            .toLocaleLowerCase()
+            .includes(searchName);
+          const matchesType =
+            projectFilters.type === "all" ||
+            (projectFilters.type === "personal"
+              ? project.organization_id === null
+              : project.organization_id !== null);
+          const matchesOrganization =
+            !projectFilters.organizationId ||
+            String(project.organization_id) === projectFilters.organizationId;
+          return matchesName && matchesType && matchesOrganization;
+        })
+      : [];
+  const hasProjectFilters =
+    projectFilters.name.trim() !== "" ||
+    projectFilters.type !== "all" ||
+    projectFilters.organizationId !== "";
 
   useEffect(() => {
     let isMounted = true;
@@ -521,6 +586,7 @@ function Dashboard({ profile }: DashboardProps) {
       setIsCreateFormOpen(false);
       setProjectScope("personal");
       setSelectedOrganizationId("");
+      setProjectFilters(emptyProjectFilters);
       setCreateProjectNotice("Proyecto creado correctamente.");
     } catch (error: unknown) {
       setCreateProjectError(getCreateProjectErrorMessage(error));
@@ -532,7 +598,17 @@ function Dashboard({ profile }: DashboardProps) {
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas text-ink">
-      <DashboardSidebar profile={profile} />
+      <DashboardSidebar
+        activeView={activeView}
+        onNavigate={(view) => {
+          setSelectedProject(null);
+          setSelectedTask(null);
+          setInitialIssue(null);
+          setActiveView(view);
+          if (view === "home") setRetryCount((count) => count + 1);
+        }}
+        profile={profile}
+      />
       <main
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto"
         ref={mainRef}
@@ -558,13 +634,52 @@ function Dashboard({ profile }: DashboardProps) {
             </svg>
           </span>
         </header>
-        {selectedProject ? (
-          <ProjectDetail
-            onBack={() => setSelectedProject(null)}
-            project={selectedProject}
-          />
-        ) : (
-          <>
+        <>
+            <div hidden={activeView !== "home" || Boolean(selectedProject || selectedTask)}>
+
+              <DashboardHome
+                active={activeView === "home" && !selectedProject && !selectedTask}
+                onOpenIssue={(issue) => {
+                  setInitialIssue(issue);
+                  setActiveView("issues");
+                }}
+                onOpenTask={(task) => {
+                  setDetailReturnView("home");
+                  setSelectedTask(task);
+                }}
+                onRetryProjects={() => setRetryCount((count) => count + 1)}
+                onSelectProject={(project) => {
+                  dashboardScrollTop.current = mainRef.current?.scrollTop ?? 0;
+                  setSelectedProject(project);
+                }}
+                onViewAllIssues={() => {
+                  setInitialIssue(null);
+                  setActiveView("issues");
+                }}
+                onViewAllProjects={() => setActiveView("projects")}
+                onViewAllTasks={() => setActiveView("tasks")}
+                projects={projectsState.status === "loaded" ? projectsState.projects : []}
+                projectsError={projectsState.status === "error" ? projectsState.message : undefined}
+                projectsStatus={projectsState.status}
+              />
+            </div>
+            <div hidden={activeView !== "tasks" || Boolean(selectedProject || selectedTask)}>
+              <MyTasks
+                active={activeView === "tasks" && !selectedProject && !selectedTask}
+                onOpenTask={(task) => {
+                  setDetailReturnView("tasks");
+                  setSelectedTask(task);
+                }}
+                projects={projectsState.status === "loaded" ? projectsState.projects : []}
+              />
+            </div>
+            <div hidden={activeView !== "issues" || Boolean(selectedProject || selectedTask)}>
+              <Issues
+                active={activeView === "issues" && !selectedProject && !selectedTask}
+                initialIssue={initialIssue}
+              />
+            </div>
+            <div hidden={activeView !== "projects" || Boolean(selectedProject || selectedTask)}>
         <section
           aria-labelledby="dashboard-title"
           className="flex-1 px-8 py-10 lg:px-16 lg:py-12"
@@ -575,10 +690,10 @@ function Dashboard({ profile }: DashboardProps) {
                 className="text-3xl font-semibold tracking-tight text-primary sm:text-4xl"
                 id="dashboard-title"
               >
-                Proyectos
+                Mis proyectos
               </h1>
               <p className="mt-3 text-sm leading-6 text-muted sm:text-base">
-                Hola, {displayName}. Aquí tienes el resumen de tu trabajo.
+                Hola, {displayName}. Consulta y crea tus proyectos personales y de organizaciones.
               </p>
             </div>
             <button
@@ -597,6 +712,82 @@ function Dashboard({ profile }: DashboardProps) {
             </button>
           </div>
         </section>
+        {projectsState.status === "loaded" && (
+          <section
+            aria-label="Filtros de proyectos"
+            className="mx-8 mb-8 grid gap-3 rounded-md border border-line bg-paper p-4 sm:grid-cols-2 xl:mx-16 xl:grid-cols-4"
+          >
+            <label className="grid gap-1 text-xs font-medium text-muted">
+              Buscar por nombre
+              <input
+                autoComplete="off"
+                className="min-h-10 rounded-sm border border-line bg-paper px-3 text-sm text-primary"
+                onChange={(event) =>
+                  setProjectFilters((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))
+                }
+                placeholder="Nombre del proyecto"
+                type="search"
+                value={projectFilters.name}
+              />
+            </label>
+            <label className="grid gap-1 text-xs font-medium text-muted">
+              Tipo de proyecto
+              <select
+                className="min-h-10 rounded-sm border border-line bg-paper px-3 text-sm text-primary"
+                onChange={(event) => {
+                  const type = event.target.value as ProjectTypeFilter;
+                  setProjectFilters((current) => ({
+                    ...current,
+                    type,
+                    organizationId:
+                      type === "personal" ? "" : current.organizationId,
+                  }));
+                }}
+                value={projectFilters.type}
+              >
+                <option value="all">Todos</option>
+                <option value="personal">Personales</option>
+                <option value="organization">De organización</option>
+              </select>
+            </label>
+            {projectOrganizationOptions.length > 0 &&
+              projectFilters.type !== "personal" && (
+                <label className="grid gap-1 text-xs font-medium text-muted">
+                  Organización
+                  <select
+                    className="min-h-10 rounded-sm border border-line bg-paper px-3 text-sm text-primary"
+                    onChange={(event) =>
+                      setProjectFilters((current) => ({
+                        ...current,
+                        organizationId: event.target.value,
+                      }))
+                    }
+                    value={projectFilters.organizationId}
+                  >
+                    <option value="">Todas</option>
+                    {projectOrganizationOptions.map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            <div className="flex items-end">
+              <button
+                className="min-h-10 rounded-sm border border-line px-4 py-2 text-sm font-medium text-primary hover:bg-mist/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass-ink disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={!hasProjectFilters}
+                onClick={() => setProjectFilters(emptyProjectFilters)}
+                type="button"
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          </section>
+        )}
         {isCreateFormOpen && projectsState.status === "loaded" && (
           <section
             aria-labelledby="create-project-title"
@@ -826,9 +1017,13 @@ function Dashboard({ profile }: DashboardProps) {
                 Todavía no tienes proyectos. Puedes crear el primero desde
                 aquí.
               </p>
+            ) : filteredProjects.length === 0 ? (
+              <p className="rounded-md border border-line bg-paper px-5 py-6 text-sm leading-6 text-muted">
+                No hay proyectos que coincidan con los filtros seleccionados.
+              </p>
             ) : (
               <div className="grid grid-cols-1 items-stretch gap-5 md:grid-cols-2 xl:grid-cols-3">
-                {projectsState.projects.map((project) => (
+                {filteredProjects.map((project) => (
                   <ProjectCard
                     key={project.id}
                     onSelect={(selected) => {
@@ -842,8 +1037,28 @@ function Dashboard({ profile }: DashboardProps) {
               </div>
             ))}
         </section>
+            </div>
+            {selectedProject && (
+              <ProjectDetail
+                onBack={() => {
+                  setSelectedProject(null);
+                  if (activeView === "home") setRetryCount((count) => count + 1);
+                }}
+                project={selectedProject}
+              />
+            )}
+            {selectedTask && (
+              <WorkItemDetail
+                onBack={() => {
+                  setSelectedTask(null);
+                  setActiveView(detailReturnView);
+                  if (detailReturnView === "home") setRetryCount((count) => count + 1);
+                }}
+                projectId={selectedTask.project_id}
+                workItemId={selectedTask.id}
+              />
+            )}
           </>
-        )}
       </main>
     </div>
   );

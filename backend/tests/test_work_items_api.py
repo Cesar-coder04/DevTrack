@@ -12,6 +12,7 @@ from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
 from app.schemas.work_item import (
     WorkItemCreate,
+    WorkItemDetailResponse,
     WorkItemListResponse,
     WorkItemResponse,
     WorkItemUpdate,
@@ -23,6 +24,7 @@ def make_work_item(**overrides) -> WorkItem:
     values = {
         "id": 3,
         "project_id": 7,
+        "type": "task",
         "created_by_id": 11,
         "assigned_to_id": 13,
         "title": "Task",
@@ -78,6 +80,7 @@ def test_create_work_item_uses_mapped_fields_and_returns_public_aliases(
     response = WorkItemResponse.model_validate(item)
     assert response.reporter_id == 11
     assert response.assignee_id is None
+    assert response.type == "task"
     assert response.model_dump()["reporter_id"] == 11
     assert "created_by_id" not in response.model_dump()
     assert "assignee_display_name" not in response.model_dump()
@@ -153,6 +156,39 @@ def test_list_work_items_returns_null_assignee_fields_for_unassigned_items(
     ]
 
 
+def test_project_work_item_type_filter_is_optional_and_additive(monkeypatch):
+    monkeypatch.setattr(
+        work_items,
+        "get_project_access",
+        lambda project_id, current_user, db: (Project(id=project_id), None),
+    )
+    task = make_work_item(type="task")
+    issue = make_work_item(id=4, type="issue", title="Issue")
+    db = MagicMock()
+    db.execute.return_value.all.return_value = [
+        (task, "Assignee"),
+        (issue, "Assignee"),
+    ]
+
+    unfiltered = work_items.list_work_items(
+        project_id=7,
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+    assert [item.type for item in unfiltered] == ["task", "issue"]
+    assert "work_items.type =" not in str(db.execute.call_args.args[0])
+
+    db.execute.return_value.all.return_value = [(task, "Assignee")]
+    tasks_only = work_items.list_work_items(
+        project_id=7,
+        type_filter="task",
+        db=db,
+        current_user=SimpleNamespace(id=11),
+    )
+    assert "work_items.type =" in str(db.execute.call_args.args[0])
+    assert [item.type for item in tasks_only] == ["task"]
+
+
 def test_update_work_item_supports_partial_updates_and_public_assignee_field(
     monkeypatch,
 ):
@@ -216,7 +252,7 @@ def test_update_work_item_supports_partial_updates_and_public_assignee_field(
     assert due_date_updated.due_date == date(2026, 10, 20)
 
 
-def test_get_work_item_response_does_not_include_list_only_assignee_name(
+def test_get_work_item_detail_includes_only_visible_project_and_assignee_names(
     monkeypatch,
 ):
     monkeypatch.setattr(
@@ -226,7 +262,13 @@ def test_get_work_item_response_does_not_include_list_only_assignee_name(
     )
     item = make_work_item()
     db = MagicMock()
-    db.get.return_value = item
+    db.execute.return_value.one_or_none.return_value = (
+        item,
+        "Visible Assignee",
+        "Project name",
+        None,
+        None,
+    )
 
     result = work_items.get_work_item(
         project_id=7,
@@ -235,8 +277,13 @@ def test_get_work_item_response_does_not_include_list_only_assignee_name(
         current_user=SimpleNamespace(id=11),
     )
 
-    response = WorkItemResponse.model_validate(result)
-    assert "assignee_display_name" not in response.model_dump()
+    response = WorkItemDetailResponse.model_validate(result)
+    assert response.assignee_display_name == "Visible Assignee"
+    assert response.project_name == "Project name"
+    assert response.organization_name is None
+    assert "email" not in response.model_dump()
+    assert "bio" not in response.model_dump()
+    assert "password_hash" not in response.model_dump()
 
 
 def test_non_list_work_item_endpoints_keep_the_base_response_schema():
@@ -247,7 +294,7 @@ def test_non_list_work_item_endpoints_keep_the_base_response_schema():
 
     assert response_models[work_items.create_work_item] is WorkItemResponse
     assert response_models[work_items.update_work_item] is WorkItemResponse
-    assert response_models[work_items.get_work_item] is WorkItemResponse
+    assert response_models[work_items.get_work_item] is WorkItemDetailResponse
     assert response_models[work_items.list_work_items] == list[WorkItemListResponse]
 
 

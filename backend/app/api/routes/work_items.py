@@ -11,14 +11,17 @@ from app.api.work_item_access import ensure_work_item_active
 from app.db.session import get_db
 from app.models.project import Project
 from app.models.project_member import ProjectMember
+from app.models.organization import Organization
 from app.models.user import User
 from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
 from app.schemas.work_item import (
     WorkItemCreate,
+    WorkItemDetailResponse,
     WorkItemListResponse,
     WorkItemResponse,
     WorkItemStatus,
+    WorkItemType,
     WorkItemUpdate,
 )
 
@@ -108,6 +111,7 @@ def create_work_item(
 
     item = WorkItem(
         project_id=project_id,
+        type="task",
         title=item_data.title,
         description=item_data.description,
         status=item_data.status,
@@ -148,6 +152,7 @@ def list_work_items(
     status_filter: WorkItemStatus | None = None,
     priority_filter: str | None = None,
     assignee_id: int | None = None,
+    type_filter: WorkItemType | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -169,6 +174,9 @@ def list_work_items(
     if assignee_id is not None:
         statement = statement.where(WorkItem.assigned_to_id == assignee_id)
 
+    if type_filter is not None:
+        statement = statement.where(WorkItem.type == type_filter)
+
     statement = statement.order_by(WorkItem.created_at.desc())
 
     rows = db.execute(statement).all()
@@ -180,7 +188,7 @@ def list_work_items(
     ]
 
 
-@router.get("/{work_item_id}", response_model=WorkItemResponse)
+@router.get("/{work_item_id}", response_model=WorkItemDetailResponse)
 def get_work_item(
     project_id: int,
     work_item_id: int,
@@ -189,17 +197,41 @@ def get_work_item(
 ):
     get_project_access(project_id, current_user, db)
 
-    item = db.get(WorkItem, work_item_id)
+    row = db.execute(
+        select(
+            WorkItem,
+            User.display_name,
+            Project.name,
+            Project.organization_id,
+            Organization.name,
+        )
+        .join(Project, WorkItem.project_id == Project.id)
+        .outerjoin(Organization, Project.organization_id == Organization.id)
+        .outerjoin(User, WorkItem.assigned_to_id == User.id)
+        .where(WorkItem.id == work_item_id, WorkItem.project_id == project_id)
+    ).one_or_none()
 
-    if item is None or item.project_id != project_id:
+    if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tarea no encontrada.",
         )
 
+    item, assignee_display_name, project_name, organization_id, organization_name = row
     ensure_work_item_active(item)
 
-    return item
+    response_data = WorkItemResponse.model_validate(item).model_dump()
+    response_data["created_by_id"] = item.created_by_id
+    response_data["assigned_to_id"] = item.assigned_to_id
+    response_data.update(
+        {
+            "project_name": project_name,
+            "organization_id": organization_id,
+            "organization_name": organization_name,
+            "assignee_display_name": assignee_display_name,
+        }
+    )
+    return WorkItemDetailResponse.model_validate(response_data)
 
 
 @router.patch("/{work_item_id}", response_model=WorkItemResponse)

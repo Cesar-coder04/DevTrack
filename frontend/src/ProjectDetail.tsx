@@ -8,6 +8,7 @@ interface ProjectDetailProps {
 
 interface WorkItemSummary {
   id: number;
+  type: "task";
   title: string;
   description: string | null;
   status: string;
@@ -37,6 +38,7 @@ function isWorkItemSummary(value: unknown): value is WorkItemSummary {
   const workItem = value as Record<string, unknown>;
   return (
     typeof workItem.id === "number" &&
+    workItem.type === "task" &&
     typeof workItem.title === "string" &&
     (typeof workItem.description === "string" ||
       workItem.description === null) &&
@@ -54,7 +56,7 @@ async function fetchWorkItems(
   signal: AbortSignal,
 ): Promise<WorkItemSummary[]> {
   const response = await fetch(
-    `/api/projects/${projectId}/work-items/`,
+    `/api/projects/${projectId}/work-items/?type_filter=task`,
     {
       method: "GET",
       credentials: "include",

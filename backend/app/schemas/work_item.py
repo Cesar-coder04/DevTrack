@@ -11,6 +11,7 @@ WorkItemStatus = Literal[
     "closed",
 ]
 
+WorkItemType = Literal["task", "issue"]
 WorkItemPriority = Literal["low", "medium", "high", "urgent"]
 
 
@@ -51,6 +52,7 @@ class WorkItemResponse(BaseModel):
 
     id: int
     project_id: int
+    type: WorkItemType
     title: str
     description: str | None
     status: WorkItemStatus
@@ -63,4 +65,11 @@ class WorkItemResponse(BaseModel):
 
 
 class WorkItemListResponse(WorkItemResponse):
+    assignee_display_name: str | None = None
+
+
+class WorkItemDetailResponse(WorkItemResponse):
+    project_name: str
+    organization_id: int | None = None
+    organization_name: str | None = None
     assignee_display_name: str | None = None

@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from app.api.projects import router as projects_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.users import router as users_router
+from app.api.routes.user_work_items import router as user_work_items_router
 from app.api.routes.organizations import router as organizations_router
 from app.api.routes.organization_members import (
     router as organization_members_router,
@@ -31,6 +32,7 @@ from app.api.routes.organization_invitations import (
 app = FastAPI(title="DevTrack API")
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(user_work_items_router)
 app.include_router(projects_router)
 app.include_router(organizations_router)
 app.include_router(organization_members_router)

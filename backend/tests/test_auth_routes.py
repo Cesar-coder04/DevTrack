@@ -340,6 +340,186 @@ def test_cookie_auth_rejects_invalid_or_unusable_session(
     assert sessions == []
 
 
+def test_my_work_items_requires_a_session_cookie(client_and_db):
+    client, _ = client_and_db
+
+    response = client.get("/api/users/me/work-items/")
+
+    assert response.status_code == 401
+
+
+def test_my_issues_requires_a_session_cookie(client_and_db):
+    client, fake_db = client_and_db
+
+    response = client.get("/api/users/me/issues/")
+
+    assert response.status_code == 401
+    fake_db.execute.assert_not_called()
+
+
+def test_my_issues_http_uses_authenticated_identity_and_ignores_user_id(
+    client_and_db, monkeypatch
+):
+    client, fake_db = client_and_db
+    sessions, expires_at = configure_auth(monkeypatch, fake_db)
+    sessions.append(SimpleNamespace(revoked_at=None, expires_at=expires_at))
+    client.cookies.set(SESSION_COOKIE, ACCESS_TOKEN)
+    fake_db.execute.return_value.all.return_value = []
+
+    response = client.get(
+        "/api/users/me/issues/",
+        params={"user_id": 999},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    statement = fake_db.execute.call_args.args[0]
+    bound_user_ids = [
+        value
+        for name, value in statement.compile().params.items()
+        if "user_id" in name
+    ]
+    assert bound_user_ids
+    assert set(bound_user_ids) == {TEST_USER.id}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"sort_by": "severity"},
+        {"sort_order": "newest"},
+        {"assignee_id": 0},
+        {"assignee_id": 5, "unassigned": "true"},
+    ],
+)
+def test_my_issues_rejects_invalid_or_conflicting_filters(
+    client_and_db, monkeypatch, query
+):
+    client, fake_db = client_and_db
+    sessions, expires_at = configure_auth(monkeypatch, fake_db)
+    sessions.append(SimpleNamespace(revoked_at=None, expires_at=expires_at))
+    client.cookies.set(SESSION_COOKIE, ACCESS_TOKEN)
+
+    response = client.get("/api/users/me/issues/", params=query)
+
+    assert response.status_code == 422
+    fake_db.execute.assert_not_called()
+
+
+def test_my_work_items_http_uses_authenticated_identity_and_ignores_user_id(
+    client_and_db, monkeypatch
+):
+    client, fake_db = client_and_db
+    other_user = SimpleNamespace(
+        id=38,
+        is_active=True,
+    )
+    users = {TEST_USER.id: TEST_USER, other_user.id: other_user}
+    token_user_ids = {"user-one-token": TEST_USER.id, "user-two-token": other_user.id}
+    now = datetime.now(timezone.utc)
+    fake_db.scalar.return_value = SimpleNamespace(
+        revoked_at=None,
+        expires_at=now + timedelta(minutes=30),
+    )
+    fake_db.get.side_effect = lambda model, user_id: users.get(user_id)
+    monkeypatch.setattr(
+        deps,
+        "decode_access_token",
+        lambda token: {"sub": str(token_user_ids[token])},
+    )
+    monkeypatch.setattr(deps, "hash_access_token", lambda token: f"hash:{token}")
+
+    task_rows = {
+        TEST_USER.id: SimpleNamespace(
+            id=101,
+            type="task",
+            title="Task for user one",
+            status="open",
+            priority="medium",
+            project_id=7,
+            due_date=None,
+            created_at=now,
+            updated_at=now,
+        ),
+        other_user.id: SimpleNamespace(
+            id=202,
+            type="task",
+            title="Task for user two",
+            status="open",
+            priority="medium",
+            project_id=8,
+            due_date=None,
+            created_at=now,
+            updated_at=now,
+        ),
+    }
+
+    def execute(statement):
+        user_id = statement.compile().params["assigned_to_id_1"]
+        task = task_rows[user_id]
+        return SimpleNamespace(
+            all=lambda: [(task, f"Project {task.project_id}", None, None)]
+        )
+
+    fake_db.execute.side_effect = execute
+
+    client.cookies.set(SESSION_COOKIE, "user-one-token")
+    first_response = client.get(
+        "/api/users/me/work-items/",
+        params={"user_id": other_user.id},
+    )
+    client.cookies.set(SESSION_COOKIE, "user-two-token")
+    second_response = client.get(
+        "/api/users/me/work-items/",
+        params={"user_id": TEST_USER.id},
+    )
+
+    assert first_response.status_code == 200
+    assert [item["id"] for item in first_response.json()] == [101]
+    assert second_response.status_code == 200
+    assert [item["id"] for item in second_response.json()] == [202]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"due_date_from": "not-a-date"},
+        {"due_date_to": "not-a-date"},
+        {"due_date_from": "2026-10-22", "due_date_to": "2026-10-21"},
+    ],
+)
+def test_my_work_items_http_rejects_invalid_date_ranges(
+    client_and_db, monkeypatch, query
+):
+    client, fake_db = client_and_db
+    sessions, expires_at = configure_auth(monkeypatch, fake_db)
+    sessions.append(SimpleNamespace(revoked_at=None, expires_at=expires_at))
+    client.cookies.set(SESSION_COOKIE, ACCESS_TOKEN)
+
+    response = client.get("/api/users/me/work-items/", params=query)
+
+    assert response.status_code == 422
+    fake_db.execute.assert_not_called()
+
+
+def test_my_work_items_http_ignores_empty_date_filters(client_and_db, monkeypatch):
+    client, fake_db = client_and_db
+    sessions, expires_at = configure_auth(monkeypatch, fake_db)
+    sessions.append(SimpleNamespace(revoked_at=None, expires_at=expires_at))
+    client.cookies.set(SESSION_COOKIE, ACCESS_TOKEN)
+    fake_db.execute.return_value.all.return_value = []
+
+    response = client.get(
+        "/api/users/me/work-items/",
+        params={"due_date_from": "", "due_date_to": "   "},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+    statement = fake_db.execute.call_args.args[0]
+    assert "work_items.due_date >=" not in str(statement)
+
+
 def test_invalid_bearer_does_not_fall_back_to_valid_cookie(
     client_and_db, monkeypatch
 ):

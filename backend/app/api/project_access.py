@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.models.organization import Organization
 from app.models.organization_member import OrganizationMember
 from app.models.project import Project
 
@@ -19,6 +20,13 @@ def require_project_organization_membership(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=detail,
+        )
+
+    organization = db.get(Organization, project.organization_id)
+    if organization is None or organization.deleted_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Organizaci\u00f3n no encontrada.",
         )
 
     membership = db.get(

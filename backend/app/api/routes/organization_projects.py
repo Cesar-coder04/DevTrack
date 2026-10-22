@@ -165,9 +165,15 @@ def list_projects(
 
     statement = (
         select(Project)
+        .join(
+            ProjectMember,
+            ProjectMember.project_id == Project.id,
+        )
         .where(
             Project.organization_id == organization_id,
             Project.deleted_at.is_(None),
+            Project.archived_at.is_(None),
+            ProjectMember.user_id == current_user.id,
         )
         .order_by(Project.created_at.desc())
     )

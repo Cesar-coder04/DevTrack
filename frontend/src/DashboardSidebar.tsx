@@ -2,14 +2,18 @@ import type { UserProfile } from "./userProfile";
 
 interface DashboardSidebarProps {
   profile: UserProfile;
+  activeView: DashboardView;
+  onNavigate: (view: DashboardView) => void;
 }
 
+export type DashboardView = "home" | "projects" | "tasks" | "issues";
+
 const primaryNavigation = [
-  { label: "Inicio", icon: "home", active: true },
-  { label: "Mis proyectos", icon: "projects", active: false },
-  { label: "Mis tareas", icon: "tasks", active: false },
-  { label: "Incidencias", icon: "issues", active: false },
-  { label: "Organizaciones", icon: "organizations", active: false },
+  { label: "Inicio", icon: "home", view: "home" },
+  { label: "Mis proyectos", icon: "projects", view: "projects" },
+  { label: "Mis tareas", icon: "tasks", view: "tasks" },
+  { label: "Incidencias", icon: "issues", view: "issues" },
+  { label: "Organizaciones", icon: "organizations", view: null },
 ] as const;
 
 function NavigationIcon({ name }: { name: string }) {
@@ -67,7 +71,11 @@ function NavigationIcon({ name }: { name: string }) {
   );
 }
 
-function DashboardSidebar({ profile }: DashboardSidebarProps) {
+function DashboardSidebar({
+  profile,
+  activeView,
+  onNavigate,
+}: DashboardSidebarProps) {
   const displayName =
     profile.display_name.trim() || profile.username.trim();
   const nameParts = displayName.split(/\s+/).filter(Boolean);
@@ -109,16 +117,7 @@ function DashboardSidebar({ profile }: DashboardSidebarProps) {
         <ul className="space-y-1">
           {primaryNavigation.map((item) => (
             <li key={item.label}>
-              {item.active ? (
-                <a
-                  aria-current="page"
-                  className="relative flex min-h-11 items-center gap-3 rounded-sm bg-ivory/10 px-3 text-sm font-medium text-ivory before:absolute before:inset-y-1 before:left-0 before:w-[3px] before:bg-brass focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass"
-                  href="/"
-                >
-                  <NavigationIcon name={item.icon} />
-                  <span>{item.label}</span>
-                </a>
-              ) : (
+              {item.view === null ? (
                 <span
                   aria-disabled="true"
                   className="flex min-h-11 cursor-default items-center gap-3 rounded-sm px-3 text-sm text-ivory/40"
@@ -126,6 +125,20 @@ function DashboardSidebar({ profile }: DashboardSidebarProps) {
                   <NavigationIcon name={item.icon} />
                   <span>{item.label}</span>
                 </span>
+              ) : (
+                <button
+                  aria-current={activeView === item.view ? "page" : undefined}
+                  className={`relative flex min-h-11 w-full items-center gap-3 rounded-sm px-3 text-left text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brass ${
+                    activeView === item.view
+                      ? "bg-ivory/10 font-medium text-ivory before:absolute before:inset-y-1 before:left-0 before:w-[3px] before:bg-brass"
+                      : "text-ivory/75 hover:bg-ivory/5 hover:text-ivory"
+                  }`}
+                  onClick={() => onNavigate(item.view)}
+                  type="button"
+                >
+                  <NavigationIcon name={item.icon} />
+                  <span>{item.label}</span>
+                </button>
               )}
             </li>
           ))}
