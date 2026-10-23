@@ -661,6 +661,8 @@ function Dashboard({ profile }: DashboardProps) {
                 projects={projectsState.status === "loaded" ? projectsState.projects : []}
                 projectsError={projectsState.status === "error" ? projectsState.message : undefined}
                 projectsStatus={projectsState.status}
+                organizations={organizationsState.status === "loaded" ? organizationsState.organizations : []}
+                organizationsStatus={organizationsState.status === "loaded" ? "loaded" : organizationsState.status === "error" ? "error" : "loading"}
               />
             </div>
             <div hidden={activeView !== "tasks" || Boolean(selectedProject || selectedTask)}>

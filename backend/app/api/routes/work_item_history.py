@@ -53,5 +53,5 @@ def list_work_item_history(
     return db.scalars(
         select(WorkItemHistory)
         .where(WorkItemHistory.work_item_id == item.id)
-        .order_by(WorkItemHistory.changed_at.desc())
+        .order_by(WorkItemHistory.changed_at.desc(), WorkItemHistory.id.desc())
     ).all()

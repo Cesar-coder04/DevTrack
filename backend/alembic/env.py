@@ -16,6 +16,9 @@ from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.work_item import WorkItem
 from app.models.work_item_history import WorkItemHistory
+from app.models.work_item_completion import WorkItemCompletion
+from app.models.work_item_assignment_baseline import WorkItemAssignmentBaseline
+from app.models.work_item_completion_coverage import WorkItemCompletionCoverage
 from app.models.work_item_comment import WorkItemComment
 from app.models.tag import Tag
 from app.models.work_item_tag import WorkItemTag

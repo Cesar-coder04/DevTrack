@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.orm import Session
 from starlette.datastructures import UploadFile
 
@@ -29,6 +30,9 @@ from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.tag import Tag
 from app.models.work_item import WorkItem
+from app.models.work_item_assignment_baseline import WorkItemAssignmentBaseline
+from app.models.work_item_completion import WorkItemCompletion
+from app.models.work_item_completion_coverage import WorkItemCompletionCoverage
 from app.models.work_item_attachment import WorkItemAttachment
 from app.models.work_item_comment import WorkItemComment
 from app.models.work_item_history import WorkItemHistory
@@ -67,6 +71,9 @@ def access_database():
             Tag.__table__,
             WorkItem.__table__,
             WorkItemHistory.__table__,
+            WorkItemAssignmentBaseline.__table__,
+            WorkItemCompletion.__table__,
+            WorkItemCompletionCoverage.__table__,
             WorkItemComment.__table__,
             WorkItemAttachment.__table__,
             WorkItemTag.__table__,
@@ -103,6 +110,9 @@ def foreign_key_access_database():
             Tag.__table__,
             WorkItem.__table__,
             WorkItemHistory.__table__,
+            WorkItemAssignmentBaseline.__table__,
+            WorkItemCompletion.__table__,
+            WorkItemCompletionCoverage.__table__,
             WorkItemComment.__table__,
             WorkItemAttachment.__table__,
             WorkItemTag.__table__,
@@ -725,6 +735,569 @@ def test_organization_project_member_keeps_work_item_access(access_database):
     assert len(listed_work_items) == 1
     assert listed_work_items[0].assignee_id == user.id
     assert listed_work_items[0].assignee_display_name == user.display_name
+
+
+@pytest.mark.parametrize("initial_status", ["resolved", "closed"])
+def test_create_finalized_task_records_initial_snapshots_and_completion(
+    access_database, initial_status
+):
+    user, project, _ = create_project_access_records(
+        access_database, organization=False
+    )
+    item = work_items.create_work_item(
+        project_id=project.id,
+        item_data=WorkItemCreate(
+            title="Created already resolved",
+            status=initial_status,
+            assignee_id=user.id,
+            due_date=datetime(2026, 10, 25, 12, tzinfo=timezone.utc),
+        ),
+        db=access_database,
+        current_user=user,
+    )
+
+    completion = access_database.scalars(
+        select(WorkItemCompletion).where(
+            WorkItemCompletion.work_item_id == item.id
+        )
+    ).one()
+    history = access_database.scalars(
+        select(WorkItemHistory)
+        .where(WorkItemHistory.work_item_id == item.id)
+        .order_by(WorkItemHistory.changed_at, WorkItemHistory.id)
+    ).all()
+
+    assert completion.status == initial_status
+    assert completion.completed_at_is_utc is True
+    assert completion.due_date_at_completion == date(2026, 10, 25)
+    assert completion.due_date_known is True
+    assert completion.assignee_id_at_completion == user.id
+    assert completion.assignee_known is True
+    assert completion.project_id_at_completion == project.id
+    baseline = access_database.get(WorkItemAssignmentBaseline, item.id)
+    assert baseline.assignee_id == user.id
+    assert baseline.baseline_kind == "creation"
+    coverage = access_database.get(WorkItemCompletionCoverage, item.id)
+    assert coverage.tracking_state_status == initial_status
+    assert coverage.tracking_state_assignee_id == user.id
+    assert coverage.tracking_state_assignee_known is True
+    assert coverage.tracking_open_cycle_started_at is None
+    assert coverage.assignment_sequence_reconstructible is True
+    assert access_database.get(WorkItemHistory, completion.source_history_id).field_name == (
+        "status_initialized"
+    )
+    assert {
+        (entry.field_name, entry.new_value)
+        for entry in history
+        if entry.field_name.endswith("_initialized")
+    } == {
+        ("status_initialized", initial_status),
+        ("due_date_initialized", "2026-10-25"),
+    }
+
+    completion.status = "closed" if initial_status == "resolved" else "resolved"
+    with pytest.raises(InvalidRequestError, match="immutable"):
+        access_database.flush()
+    access_database.rollback()
+    access_database.expire_all()
+    assert access_database.get(
+        WorkItemCompletion, completion.id
+    ).status == initial_status
+
+    persisted_completion = access_database.get(WorkItemCompletion, completion.id)
+    access_database.delete(persisted_completion)
+    with pytest.raises(InvalidRequestError, match="immutable"):
+        access_database.flush()
+    access_database.rollback()
+    access_database.expire_all()
+    assert access_database.get(WorkItemCompletion, completion.id) is not None
+
+
+def test_open_task_records_null_assignment_baseline_and_assignment_changes(
+    access_database,
+):
+    user, project, _ = create_project_access_records(
+        access_database, organization=False
+    )
+    item = work_items.create_work_item(
+        project_id=project.id,
+        item_data=WorkItemCreate(title="Initially unassigned"),
+        db=access_database,
+        current_user=user,
+    )
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(assignee_id=user.id),
+        db=access_database,
+        current_user=user,
+    )
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(assignee_id=None),
+        db=access_database,
+        current_user=user,
+    )
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(assignee_id=None),
+        db=access_database,
+        current_user=user,
+    )
+
+    assignment_events = access_database.scalars(
+        select(WorkItemHistory)
+        .where(
+            WorkItemHistory.work_item_id == item.id,
+            WorkItemHistory.field_name.in_(
+                ("assignee_initialized", "assignee_id")
+            ),
+        )
+        .order_by(WorkItemHistory.changed_at, WorkItemHistory.id)
+    ).all()
+    assert [entry.field_name for entry in assignment_events] == [
+        "assignee_id",
+        "assignee_id",
+    ]
+    assert [(entry.old_value, entry.new_value) for entry in assignment_events] == [
+        (None, str(user.id)),
+        (str(user.id), None),
+    ]
+    baseline = access_database.get(WorkItemAssignmentBaseline, item.id)
+    assert baseline.assignee_id is None
+    assert baseline.baseline_kind == "creation"
+    coverage = access_database.get(WorkItemCompletionCoverage, item.id)
+    assert coverage.coverage_origin == "creation"
+    assert coverage.captured_since_creation is True
+    assert coverage.legacy_completion_omitted_count == 0
+    assert coverage.tracking_state_status == "open"
+    assert coverage.tracking_state_assignee_id is None
+    assert coverage.tracking_state_assignee_known is True
+    assert coverage.tracking_open_cycle_started_at == coverage.tracking_state_at
+    assert coverage.assignment_event_count == 2
+    if coverage.assignment_timestamps_ambiguous:
+        assert coverage.assignment_sequence_reconstructible is False
+    else:
+        assert coverage.assignment_sequence_reconstructible is True
+    assert access_database.scalar(
+        select(func.count())
+        .select_from(WorkItemCompletion)
+        .where(WorkItemCompletion.work_item_id == item.id)
+    ) == 0
+
+
+def test_assignment_coverage_marks_ambiguous_and_contradictory_sequences(
+    access_database,
+):
+    user, project, _ = create_project_access_records(
+        access_database, organization=False
+    )
+    second_user = User(
+        username="assignment-second",
+        email="assignment-second@example.test",
+        password_hash="unused",
+        display_name="Assignment Second",
+    )
+    access_database.add(second_user)
+    access_database.flush()
+    access_database.add_all(
+        [
+            ProjectMember(
+                project_id=project.id, user_id=second_user.id, role="member"
+            )
+        ]
+    )
+    item = work_items.create_work_item(
+        project_id=project.id,
+        item_data=WorkItemCreate(title="Assignment diagnostics"),
+        db=access_database,
+        current_user=user,
+    )
+    coverage = access_database.get(WorkItemCompletionCoverage, item.id)
+    snapshot_at = coverage.tracking_state_at
+    fixed_at = snapshot_at.replace(microsecond=0)
+    coverage.tracking_state_at = fixed_at - timedelta(seconds=1)
+    access_database.flush()
+
+    # First history event conflicts with the known NULL snapshot, and shares
+    # the stored second with the next event. This must not be called reliable.
+    access_database.add_all(
+        [
+            WorkItemHistory(
+                work_item_id=item.id,
+                changed_by_id=user.id,
+                field_name="assignee_id",
+                old_value=str(second_user.id),
+                new_value=str(user.id),
+                changed_at=fixed_at,
+            ),
+            WorkItemHistory(
+                work_item_id=item.id,
+                changed_by_id=user.id,
+                field_name="assignee_id",
+                old_value="999999",
+                new_value=str(second_user.id),
+                changed_at=fixed_at,
+            ),
+        ]
+    )
+    access_database.flush()
+    work_items._record_assignment_coverage(
+        access_database,
+        item,
+        None,
+        fixed_at,
+    )
+    access_database.flush()
+
+    assert coverage.tracking_state_assignee_id is None
+    assert coverage.tracking_state_assignee_known is True
+    assert coverage.assignment_sequence_reconstructible is False
+    assert coverage.assignment_timestamps_ambiguous is True
+    assert coverage.assignment_timeline_inconsistent is True
+
+
+def test_assignment_coverage_write_failure_rolls_back_assignment_and_history(
+    access_database,
+):
+    user, project, _ = create_project_access_records(
+        access_database, organization=False
+    )
+    item = work_items.create_work_item(
+        project_id=project.id,
+        item_data=WorkItemCreate(
+            title="Assignment rollback",
+            assignee_id=user.id,
+        ),
+        db=access_database,
+        current_user=user,
+    )
+
+    def fail_coverage_flush(session, _flush_context, _instances):
+        if any(
+            isinstance(value, WorkItemCompletionCoverage)
+            for value in session.dirty
+        ):
+            raise RuntimeError("assignment coverage update failed")
+
+    event.listen(access_database, "before_flush", fail_coverage_flush)
+    try:
+        with pytest.raises(RuntimeError, match="assignment coverage update failed"):
+            work_items.update_work_item(
+                project_id=project.id,
+                work_item_id=item.id,
+                item_data=WorkItemUpdate(assignee_id=None),
+                db=access_database,
+                current_user=user,
+            )
+    finally:
+        event.remove(access_database, "before_flush", fail_coverage_flush)
+
+    access_database.expire_all()
+    persisted = access_database.get(WorkItem, item.id)
+    coverage = access_database.get(WorkItemCompletionCoverage, item.id)
+    assert persisted.assigned_to_id == user.id
+    assert coverage.assignment_event_count == 0
+    assert coverage.tracking_state_assignee_id == user.id
+    assert access_database.scalar(
+        select(func.count())
+        .select_from(WorkItemHistory)
+        .where(
+            WorkItemHistory.work_item_id == item.id,
+            WorkItemHistory.field_name == "assignee_id",
+        )
+    ) == 0
+
+
+def test_completion_cycles_snapshot_resulting_assignee_and_due_date(
+    access_database,
+):
+    user, project, item = create_project_access_records(
+        access_database, organization=False
+    )
+    other_user = User(
+        username="completion-assignee",
+        email="completion-assignee@example.test",
+        password_hash="unused",
+        display_name="Completion Assignee",
+    )
+    access_database.add(other_user)
+    access_database.flush()
+    access_database.add(
+        ProjectMember(
+            project_id=project.id,
+            user_id=other_user.id,
+            role="member",
+        )
+    )
+    item.assigned_to_id = user.id
+    item.due_date = date(2026, 11, 1)
+    access_database.commit()
+
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(
+            status="resolved",
+            assignee_id=other_user.id,
+            due_date=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        ),
+        db=access_database,
+        current_user=user,
+    )
+    first = access_database.scalars(
+        select(WorkItemCompletion).where(
+            WorkItemCompletion.work_item_id == item.id
+        )
+    ).one()
+    assert first.assignee_id_at_completion == other_user.id
+    assert first.due_date_at_completion == date(2026, 11, 5)
+
+    # Final-to-final changes do not create a cycle; reopening does.
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(status="closed"),
+        db=access_database,
+        current_user=user,
+    )
+    assert access_database.scalar(
+        select(func.count()).select_from(WorkItemCompletion)
+    ) == 1
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(status="resolved"),
+        db=access_database,
+        current_user=user,
+    )
+    assert access_database.scalar(
+        select(func.count()).select_from(WorkItemCompletion)
+    ) == 1
+    # Sending the already-persisted state also creates no completion.
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(status="resolved"),
+        db=access_database,
+        current_user=user,
+    )
+    assert access_database.scalar(
+        select(func.count()).select_from(WorkItemCompletion)
+    ) == 1
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(status="in_progress"),
+        db=access_database,
+        current_user=user,
+    )
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(
+            status="closed",
+            assignee_id=None,
+            due_date=None,
+        ),
+        db=access_database,
+        current_user=user,
+    )
+    completions = access_database.scalars(
+        select(WorkItemCompletion)
+        .where(WorkItemCompletion.work_item_id == item.id)
+        .order_by(WorkItemCompletion.id)
+    ).all()
+    assert len(completions) == 2
+    assert completions[0].assignee_id_at_completion == other_user.id
+    assert completions[0].due_date_at_completion == date(2026, 11, 5)
+    assert completions[1].assignee_id_at_completion is None
+    assert completions[1].assignee_known is True
+    assert completions[1].due_date_at_completion is None
+    assert completions[1].due_date_known is True
+
+    # Later edits cannot change the earlier completion snapshot.
+    work_items.update_work_item(
+        project_id=project.id,
+        work_item_id=item.id,
+        item_data=WorkItemUpdate(
+            status="open",
+            due_date=datetime(2026, 12, 1, tzinfo=timezone.utc),
+            assignee_id=user.id,
+        ),
+        db=access_database,
+        current_user=user,
+    )
+    access_database.expire_all()
+    assert access_database.get(WorkItemCompletion, completions[0].id).due_date_at_completion == (
+        date(2026, 11, 5)
+    )
+
+
+@pytest.mark.parametrize("failure_target", ["history", "completion"])
+def test_completion_write_failures_roll_back_task_and_events(
+    access_database, failure_target
+):
+    user, project, item = create_project_access_records(
+        access_database, organization=False
+    )
+
+    def fail_before_flush(session, _flush_context, _instances):
+        if failure_target == "history" and any(
+            isinstance(value, WorkItemHistory)
+            and value.field_name == "status"
+            for value in session.new
+        ):
+            raise RuntimeError("history insert failed")
+        if failure_target == "completion" and any(
+            isinstance(value, WorkItemCompletion) for value in session.new
+        ):
+            raise RuntimeError("completion insert failed")
+
+    event.listen(access_database, "before_flush", fail_before_flush)
+    try:
+        with pytest.raises(RuntimeError):
+            work_items.update_work_item(
+                project_id=project.id,
+                work_item_id=item.id,
+                item_data=WorkItemUpdate(status="resolved"),
+                db=access_database,
+                current_user=user,
+            )
+    finally:
+        event.remove(access_database, "before_flush", fail_before_flush)
+
+    access_database.expire_all()
+    assert access_database.get(WorkItem, item.id).status == "open"
+    assert access_database.scalar(
+        select(func.count())
+        .select_from(WorkItemHistory)
+        .where(
+            WorkItemHistory.work_item_id == item.id,
+            WorkItemHistory.field_name == "status",
+        )
+    ) == 0
+    assert access_database.scalar(
+        select(func.count())
+        .select_from(WorkItemCompletion)
+        .where(WorkItemCompletion.work_item_id == item.id)
+    ) == 0
+
+
+@pytest.mark.parametrize("failure_target", ["baseline", "history"])
+def test_create_task_database_insert_failure_rolls_back_all_rows(
+    foreign_key_access_database, failure_target
+):
+    database = foreign_key_access_database
+    user, project, _ = create_project_access_records(
+        database, organization=False
+    )
+    assert database.connection().exec_driver_sql(
+        "PRAGMA foreign_keys"
+    ).scalar_one() == 1
+
+    def invalidate_target_insert(session, _flush_context, _instances):
+        for value in session.new:
+            if (
+                failure_target == "baseline"
+                and isinstance(value, WorkItemAssignmentBaseline)
+            ):
+                value.assignee_id = -999
+            elif (
+                failure_target == "history"
+                and isinstance(value, WorkItemHistory)
+                and value.field_name == "created"
+            ):
+                value.changed_by_id = -999
+
+    event.listen(database, "before_flush", invalidate_target_insert)
+    try:
+        with pytest.raises(IntegrityError) as error:
+            work_items.create_work_item(
+                project_id=project.id,
+                item_data=WorkItemCreate(
+                    title=f"Persistence failure {failure_target}",
+                    assignee_id=user.id,
+                ),
+                db=database,
+                current_user=user,
+            )
+    finally:
+        event.remove(database, "before_flush", invalidate_target_insert)
+
+    expected_table = (
+        "work_item_assignment_baselines"
+        if failure_target == "baseline"
+        else "work_item_history"
+    )
+    assert expected_table in str(error.value.statement).lower()
+    assert "foreign key constraint failed" in str(error.value.orig).lower()
+
+    database.expire_all()
+    assert database.scalar(
+        select(func.count()).select_from(WorkItem).where(
+            WorkItem.title == f"Persistence failure {failure_target}"
+        )
+    ) == 0
+    for model in (
+        WorkItemHistory,
+        WorkItemAssignmentBaseline,
+        WorkItemCompletionCoverage,
+        WorkItemCompletion,
+    ):
+        assert database.scalar(
+            select(func.count()).select_from(model)
+        ) == 0
+
+
+def test_completion_database_insert_failure_rolls_back_status_and_history(
+    foreign_key_access_database,
+):
+    database = foreign_key_access_database
+    user, project, item = create_project_access_records(
+        database, organization=False
+    )
+    assert database.connection().exec_driver_sql(
+        "PRAGMA foreign_keys"
+    ).scalar_one() == 1
+
+    def invalidate_completion_project(session, _flush_context, _instances):
+        for value in session.new:
+            if isinstance(value, WorkItemCompletion):
+                value.project_id_at_completion = -999
+
+    event.listen(database, "before_flush", invalidate_completion_project)
+    try:
+        with pytest.raises(IntegrityError) as error:
+            work_items.update_work_item(
+                project_id=project.id,
+                work_item_id=item.id,
+                item_data=WorkItemUpdate(status="resolved"),
+                db=database,
+                current_user=user,
+            )
+    finally:
+        event.remove(database, "before_flush", invalidate_completion_project)
+
+    assert "insert into work_item_completions" in str(error.value.statement).lower()
+    assert "foreign key constraint failed" in str(error.value.orig).lower()
+    database.expire_all()
+    assert database.get(WorkItem, item.id).status == "open"
+    assert database.scalar(
+        select(func.count())
+        .select_from(WorkItemHistory)
+        .where(
+            WorkItemHistory.work_item_id == item.id,
+            WorkItemHistory.field_name == "status",
+        )
+    ) == 0
+    assert database.scalar(
+        select(func.count())
+        .select_from(WorkItemCompletion)
+        .where(WorkItemCompletion.work_item_id == item.id)
+    ) == 0
 
 
 @pytest.mark.parametrize(

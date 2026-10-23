@@ -9,6 +9,8 @@ from app.api.routes import work_item_history, work_items
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.work_item import WorkItem
+from app.models.work_item_assignment_baseline import WorkItemAssignmentBaseline
+from app.models.work_item_completion_coverage import WorkItemCompletionCoverage
 from app.models.work_item_history import WorkItemHistory
 from app.schemas.work_item import (
     WorkItemCreate,
@@ -74,8 +76,23 @@ def test_create_work_item_uses_mapped_fields_and_returns_public_aliases(
     assert item.created_by_id == 11
     assert item.assigned_to_id is None
     assert item.due_date == date(2026, 10, 16)
-    assert isinstance(added[1], WorkItemHistory)
-    assert added[1].changed_by_id == 11
+    created_history = next(
+        value
+        for value in added
+        if isinstance(value, WorkItemHistory) and value.field_name == "created"
+    )
+    baseline = next(
+        value for value in added if isinstance(value, WorkItemAssignmentBaseline)
+    )
+    assert created_history.changed_by_id == 11
+    assert baseline.assignee_id is None
+    assert baseline.baseline_kind == "creation"
+    coverage = next(
+        value for value in added if isinstance(value, WorkItemCompletionCoverage)
+    )
+    assert coverage.tracking_started_at.tzinfo == timezone.utc
+    assert coverage.coverage_origin == "creation"
+    assert coverage.captured_since_creation is True
 
     response = WorkItemResponse.model_validate(item)
     assert response.reporter_id == 11
@@ -218,6 +235,13 @@ def test_update_work_item_supports_partial_updates_and_public_assignee_field(
         current_user=SimpleNamespace(id=11),
     )
 
+    db.get.assert_called_with(
+        WorkItem,
+        3,
+        with_for_update=True,
+        populate_existing=True,
+    )
+
     assert updated.description == "Changed"
     assert updated.title == "Task"
     assert updated.assigned_to_id == 13
@@ -236,8 +260,13 @@ def test_update_work_item_supports_partial_updates_and_public_assignee_field(
     assert "assignee_display_name" not in WorkItemResponse.model_validate(
         assigned
     ).model_dump()
-    assert isinstance(db.add.call_args.args[0], WorkItemHistory)
-    assert db.add.call_args.args[0].changed_by_id == 11
+    assignment_history = next(
+        call.args[0]
+        for call in db.add.call_args_list
+        if isinstance(call.args[0], WorkItemHistory)
+        and call.args[0].field_name == "assignee_id"
+    )
+    assert assignment_history.changed_by_id == 11
 
     due_date_updated = work_items.update_work_item(
         project_id=7,
@@ -360,6 +389,7 @@ def test_list_work_item_history_orders_by_changed_at_and_maps_response():
 
     statement = str(db.scalars.call_args.args[0])
     assert "work_item_history.changed_at DESC" in statement
+    assert "work_item_history.id DESC" in statement
     response = WorkItemHistoryResponse.model_validate(result[0])
     assert response.user_id == 11
     assert response.created_at == history.changed_at

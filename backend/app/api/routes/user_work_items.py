@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import and_, case, or_, select
@@ -15,12 +16,58 @@ from app.models.user import User
 from app.models.work_item import WorkItem
 from app.schemas.work_item import WorkItemPriority, WorkItemStatus
 from app.schemas.user_work_item import UserIssueResponse, UserWorkItemResponse
+from app.schemas.dashboard_statistics import QuarterlyStatisticsResponse
+from app.services.quarterly_statistics import calculate_quarterly_statistics
 
 
 router = APIRouter(
     prefix="/users/me",
     tags=["User work items"],
 )
+
+
+@router.get(
+    "/dashboard/statistics",
+    response_model=QuarterlyStatisticsResponse,
+)
+def get_dashboard_statistics(
+    year: int | None = Query(default=None, ge=1900, le=9998),
+    quarter: int | None = Query(default=None, ge=1, le=4),
+    scope: Literal["all", "personal", "organization", "project"] = "all",
+    organization_id: int | None = Query(default=None, gt=0),
+    project_id: int | None = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    now_local = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Madrid"))
+    selected_year = year if year is not None else now_local.year
+    selected_quarter = quarter if quarter is not None else (now_local.month - 1) // 3 + 1
+    if scope == "organization":
+        if organization_id is None or project_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="scope=organization requiere organization_id y no admite project_id.",
+            )
+    elif scope == "project":
+        if project_id is None or organization_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="scope=project requiere project_id y no admite organization_id.",
+            )
+    elif organization_id is not None or project_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="organization_id y project_id requieren su ámbito específico.",
+        )
+    return calculate_quarterly_statistics(
+        db,
+        user_id=current_user.id,
+        year=selected_year,
+        quarter=selected_quarter,
+        scope=scope,
+        organization_id=organization_id,
+        project_id=project_id,
+    )
 
 
 def parse_optional_date(value: str | None, parameter_name: str) -> date | None:

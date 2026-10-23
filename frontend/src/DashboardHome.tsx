@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ProjectSummary } from "./ProjectCard";
 import { isMyTask, type MyTask } from "./MyTasks";
 import { isIssue, type Issue } from "./Issues";
+import QuarterlyStatistics from "./QuarterlyStatistics";
 
 type SectionState<T> =
   | { status: "loading" }
@@ -11,6 +12,8 @@ type SectionState<T> =
 interface DashboardHomeProps {
   active: boolean;
   projects: ProjectSummary[];
+  organizations: { id: number; name: string }[];
+  organizationsStatus: "loading" | "error" | "loaded";
   projectsStatus: "loading" | "error" | "loaded";
   projectsError?: string;
   onRetryProjects: () => void;
@@ -121,6 +124,15 @@ function DashboardHome(props: DashboardHomeProps) {
   return (
     <section aria-labelledby="home-title" className="px-8 pb-12 lg:px-16">
       <h1 className="mb-6 text-3xl font-semibold tracking-tight text-primary sm:text-4xl" id="home-title">Inicio</h1>
+      <div className="mb-5">
+        <QuarterlyStatistics
+          active={props.active}
+          organizations={props.organizations}
+          organizationsStatus={props.organizationsStatus}
+          projects={props.projects}
+          projectsStatus={props.projectsStatus}
+        />
+      </div>
       <div className="grid gap-5 xl:grid-cols-3">
         <section aria-labelledby="recent-projects-title" className={sectionClass}>
           <div className="mb-4 flex items-center justify-between gap-3">
